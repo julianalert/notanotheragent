@@ -1,7 +1,7 @@
-import { json, notFound, radarFromRequest } from '@/lib/http'
+import { json, notFound, radarFromRequest, withErrors } from '@/lib/http'
 import { updateFocus } from '@/lib/radars'
 
-export async function PATCH(request: Request) {
+export const PATCH = withErrors(async function patchHandler(request: Request) {
   const radar = await radarFromRequest(request)
   if (!radar) return notFound()
   if (!radar.profile) return json({ error: 'Focus is available once your business profile is ready.' }, { status: 409 })
@@ -25,4 +25,4 @@ export async function PATCH(request: Request) {
   // Applies to future scheduled runs only: no extra search, no deadline change, no services outside the profile.
   await updateFocus(radar, { services, market: market || null })
   return json({ ok: true })
-}
+})

@@ -39,3 +39,19 @@ export async function radarFromRequest(request: Request) {
 }
 
 export const notFound = () => json({ error: 'Not found' }, { status: 404 })
+
+type Handler<C> = (request: Request, context: C) => Promise<Response>
+
+/** Log server failures without request paths or tokens, and give the page a readable JSON error. */
+export function withErrors<C>(handler: Handler<C>): Handler<C> {
+  return async (request, context) => {
+    try {
+      return await handler(request, context)
+    } catch (error) {
+      console.error(
+        JSON.stringify({ at: new Date().toISOString(), event: 'api.error', method: request.method, error: (error as Error).message }),
+      )
+      return json({ error: 'Something went wrong on our side. Please try again in a moment.' }, { status: 500 })
+    }
+  }
+}

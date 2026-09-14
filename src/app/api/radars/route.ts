@@ -1,5 +1,5 @@
 import { config } from '@/lib/config'
-import { clientKey, json, RADAR_COOKIE, rateLimit } from '@/lib/http'
+import { clientKey, json, RADAR_COOKIE, rateLimit, withErrors } from '@/lib/http'
 import { createRadar, findRadarByToken } from '@/lib/radars'
 import { tick } from '@/lib/scheduler'
 import { isValidTimeZone } from '@/lib/time'
@@ -8,7 +8,7 @@ import { normaliseWebsite } from '@/lib/url'
 import { cookies } from 'next/headers'
 import { after } from 'next/server'
 
-export async function POST(request: Request) {
+export const POST = withErrors(async function postHandler(request: Request) {
   const body = await request.json().catch(() => null)
   const website = normaliseWebsite(body?.website)
   if (!website.ok) return json({ error: website.error, field: 'website' }, { status: 422 })
@@ -46,4 +46,4 @@ export async function POST(request: Request) {
   after(() => tick().catch((error) => console.error('tick failed', (error as Error).message)))
 
   return json({ token }, { status: 201 })
-}
+})

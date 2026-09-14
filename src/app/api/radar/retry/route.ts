@@ -1,10 +1,10 @@
 import { config } from '@/lib/config'
-import { clientKey, json, notFound, radarFromRequest, rateLimit } from '@/lib/http'
+import { clientKey, json, notFound, radarFromRequest, rateLimit, withErrors } from '@/lib/http'
 import { retryInitialRun } from '@/lib/radars'
 import { tick } from '@/lib/scheduler'
 import { after } from 'next/server'
 
-export async function POST(request: Request) {
+export const POST = withErrors(async function postHandler(request: Request) {
   const radar = await radarFromRequest(request)
   if (!radar) return notFound()
 
@@ -21,4 +21,4 @@ export async function POST(request: Request) {
 
   after(() => tick().catch((error) => console.error('tick failed', (error as Error).message)))
   return json({ ok: true })
-}
+})

@@ -138,6 +138,13 @@ async function createDatabase(): Promise<Database> {
     }
   }
 
+  // The embedded database writes to local disk: development only. Serverless filesystems are read-only.
+  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'DATABASE_URL is not set. Production needs a Postgres connection string (e.g. Supabase → Project Settings → Database → Connection string).',
+    )
+  }
+
   const { PGlite } = await import('@electric-sql/pglite')
   const path = await import('node:path')
   const fs = await import('node:fs/promises')
