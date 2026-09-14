@@ -103,6 +103,21 @@ create table if not exists evaluation_reviews (
 );
 `
 
+/** Transient connection-level failures (not auth or SQL errors) get one quick retry. */
+const TRANSIENT_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', '57P01', '08006', '08001', '08003', '53300'])
+
+async function withConnectionRetry<T>(fn: () => Promise<T>) {
+  try {
+    return await fn()
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? ''
+    const transient = TRANSIENT_CODES.has(code) || /Connection terminated|timeout exceeded when trying to connect/i.test((error as Error).message)
+    if (!transient) throw error
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    return fn()
+  }
+}
+
 async function createDatabase(): Promise<Database> {
   if (process.env.DATABASE_URL) {
     if (!/^postgres(ql)?:\/\//.test(process.env.DATABASE_URL)) {
@@ -111,11 +126,20 @@ async function createDatabase(): Promise<Database> {
       )
     }
     const { Pool } = await import('pg')
-    const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, connectionTimeoutMillis: 10_000 })
-    await pool.query(SCHEMA)
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      // Serverless: keep few connections per instance; use Supabase's transaction pooler (port 6543).
+      max: 3,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+    })
+    // A broken idle connection must not crash the function.
+    pool.on('error', (error) => console.error(JSON.stringify({ event: 'db.pool_error', error: error.message })))
+    // In production the schema is applied once from supabase/schema.sql; don't run DDL on every cold start.
+    if (process.env.NODE_ENV !== 'production' || process.env.DB_AUTO_MIGRATE === '1') await pool.query(SCHEMA)
     return {
       async query<T extends Row>(sql: string, params: unknown[] = []) {
-        return (await pool.query(sql, params)).rows as T[]
+        return (await withConnectionRetry(() => pool.query(sql, params))).rows as T[]
       },
       async transaction(fn) {
         const connection = await pool.connect()
