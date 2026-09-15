@@ -1,9 +1,11 @@
 'use client'
 
-import { Button } from '@/components/elements/button'
+import { Button, PlainButton } from '@/components/elements/button'
+import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import { clsx } from 'clsx/lite'
 import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
+import { EmailForm } from './email-form'
 
 export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
   const router = useRouter()
@@ -11,6 +13,8 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
   const [value, setValue] = useState(defaultValue)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  // Step 2: the radar exists and research has started; ask where to send results before opening the page.
+  const [started, setStarted] = useState<{ token: string; host: string } | null>(null)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -37,11 +41,41 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
         setPending(false)
         return
       }
-      router.push(`/r/${body.token}`)
+      if (body.hasEmail) {
+        router.push(`/r/${body.token}`)
+        return
+      }
+      setStarted({ token: body.token, host: value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') })
+      setPending(false)
     } catch {
       setError('We could not reach the server. Check your connection and try again.')
       setPending(false)
     }
+  }
+
+  if (started) {
+    return (
+      <div className="flex w-full max-w-lg flex-col gap-3">
+        <p className="flex items-start gap-2 px-1 text-sm/7 text-mist-950 dark:text-white" role="status">
+          <span className="mt-1 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-mist-950 text-white dark:bg-white dark:text-mist-950">
+            <CheckmarkIcon className="size-2.5 stroke-2" />
+          </span>
+          <span>
+            Research started for <span className="font-medium">{started.host}</span>. Where should we send your leads?
+          </span>
+        </p>
+        <EmailForm token={started.token} onSaved={() => router.push(`/r/${started.token}`)} />
+        <PlainButton
+          onClick={() => {
+            setStarted(null)
+            setValue('')
+          }}
+          className="self-start"
+        >
+          Wrong website? Start over
+        </PlainButton>
+      </div>
+    )
   }
 
   return (

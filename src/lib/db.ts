@@ -26,6 +26,11 @@ create table if not exists radars (
   research_started_at timestamptz not null,
   research_ends_at timestamptz not null,
   next_run_at timestamptz,
+  email text,
+  email_added_at timestamptz,
+  email_unsubscribed_at timestamptz,
+  -- AES-GCM encrypted private token, only so emails can include the private link.
+  token_ciphertext text,
   constraint research_period check (research_ends_at > research_started_at)
 );
 
@@ -61,11 +66,28 @@ create table if not exists research_runs (
   -- Raw provider response for diagnosis. Restricted: never exposed through any API route.
   raw_response jsonb,
   lease_until timestamptz,
+  email_status text check (email_status in ('pending', 'sending', 'sent', 'skipped', 'failed')),
+  email_attempts integer not null default 0,
+  email_claimed_at timestamptz,
+  email_sent_at timestamptz,
+  email_error text,
   created_at timestamptz not null default now(),
   unique (radar_id, kind, run_key)
 );
 
 create index if not exists research_runs_status_idx on research_runs (status, scheduled_at);
+
+-- Email delivery (added after the first release): idempotent upgrades for existing databases.
+alter table radars add column if not exists email text;
+alter table radars add column if not exists email_added_at timestamptz;
+alter table radars add column if not exists email_unsubscribed_at timestamptz;
+alter table radars add column if not exists token_ciphertext text;
+alter table research_runs add column if not exists email_status text check (email_status in ('pending', 'sending', 'sent', 'skipped', 'failed'));
+alter table research_runs add column if not exists email_attempts integer not null default 0;
+alter table research_runs add column if not exists email_claimed_at timestamptz;
+alter table research_runs add column if not exists email_sent_at timestamptz;
+alter table research_runs add column if not exists email_error text;
+create index if not exists research_runs_email_idx on research_runs (email_status) where email_status in ('pending', 'sending');
 
 create table if not exists leads (
   id uuid primary key default gen_random_uuid(),

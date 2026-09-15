@@ -45,7 +45,7 @@ export function SiteFooter() {
           <FooterCategory title="Your research">
             <FooterLink href="/#start">Start a search</FooterLink>
             <li className="text-mist-700 dark:text-mist-400">Free for 14 days</li>
-            <li className="text-mist-700 dark:text-mist-400">No account needed</li>
+            <li className="text-mist-700 dark:text-mist-400">New leads by email</li>
           </FooterCategory>
           <FooterCategory title="Privacy">
             <li className="text-mist-700 dark:text-mist-400">Private link, no tracking</li>

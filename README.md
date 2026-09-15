@@ -17,6 +17,16 @@ npm run dev
 - **Supabase**: run `supabase/schema.sql` in the SQL Editor, then set `DATABASE_URL` to the Postgres connection string (Project Settings → Database). Don't use the `https://…supabase.co` project URL.
 - **Scheduler**: in dev, `src/instrumentation.ts` calls it every 5 s. In production, call `GET /api/cron/tick` every minute with `Authorization: Bearer $CRON_SECRET`.
 
+## Email delivery
+
+After the website step, visitors give the email address where leads should go. Research is already running while they type. Results pages without an email ask for one first.
+
+- **What gets sent:** one email when the first research finishes (whatever the outcome), then one on each morning with new leads, for 14 days. Nothing on empty days.
+- **How:** completed runs are marked `email_status = 'pending'`. The scheduler claims each one with a lease and sends through Resend, using the run id as the idempotency key. Transient failures get up to 3 attempts. Code: `src/lib/email/`.
+- **Private link:** emails contain the results link, so the token is also stored encrypted with `APP_SECRET` (AES-256-GCM). Access control still uses only the token hash.
+- **Unsubscribe:** every email has a signed one-click link (`List-Unsubscribe` plus a confirmation page). Opening the link only shows the page; unsubscribing needs a POST, so link scanners can't trigger it.
+- **Setup:** set `RESEND_API_KEY`, `EMAIL_FROM` (on a domain verified in Resend) and `APP_SECRET`. For an existing Supabase database, run `supabase/migrations/002_email_delivery.sql`.
+
 ## Research engine
 
 Implements the research engine spec (`research-v1`, schema `lead_research_v1`).

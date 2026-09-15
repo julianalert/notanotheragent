@@ -6,6 +6,7 @@ import { Subheading } from '@/components/elements/subheading'
 import { Text } from '@/components/elements/text'
 import type { LeadView, RadarView } from '@/lib/radars'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { EmailForm } from '../../email-form'
 import { WebsiteForm } from '../../website-form'
 import { ResearchProgress, stageFor } from './progress'
 import { Results } from './results'
@@ -152,7 +153,27 @@ export function RadarClient({ token, initialView }: { token: string; initialView
   const slow = run ? now - Date.parse(run.createdAt) > view.slowRunThresholdMs : false
   let content
 
-  if (!run || run.status !== 'completed' || holdReady) {
+  if (!view.hasEmail) {
+    content = (
+      <section className="py-16">
+        <Container className="flex flex-col gap-10">
+          <div className="flex max-w-2xl flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <Eyebrow>Private radar · {view.websiteHost}</Eyebrow>
+              <Subheading>Where should we send your leads?</Subheading>
+            </div>
+            <Text className="text-pretty">
+              Your research has already started. Add your email and we’ll send your first leads as soon as they’re
+              ready, then new matches every morning.
+            </Text>
+          </div>
+          <Framed color="blue" className="max-w-3xl" surfaceClassName="p-6 sm:p-10">
+            <EmailForm token={token} onSaved={refresh} />
+          </Framed>
+        </Container>
+      </section>
+    )
+  } else if (!run || run.status !== 'completed' || holdReady) {
     content = (
       <ResearchProgress
         run={holdReady && run ? { ...run, status: 'completed' } : run}

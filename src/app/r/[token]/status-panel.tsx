@@ -4,6 +4,7 @@ import { PlainButton } from '@/components/elements/button'
 import { Wallpaper } from '@/components/elements/wallpaper'
 import { ClockIcon } from '@/components/icons/clock-icon'
 import { LockIcon } from '@/components/icons/lock-icon'
+import { MailIcon } from '@/components/icons/mail-icon'
 import type { RadarView } from '@/lib/radars'
 import { clsx } from 'clsx/lite'
 import { useMemo, useState } from 'react'
@@ -25,7 +26,7 @@ export function PrivateLinkBox({
         {headline}
       </p>
       <p className="text-sm/6 text-mist-700 dark:text-mist-400">
-        Anyone with this link can see your results. Keep this link private. There’s no account or email recovery.
+        Anyone with this link can see your results, so keep it private. It’s also in every lead email we send you.
       </p>
       <code className="truncate rounded-full bg-white px-3 py-1 font-mono text-xs/7 text-mist-600 inset-ring-1 inset-ring-black/10 dark:bg-white/10 dark:text-mist-300 dark:inset-ring-white/10">
         {privateUrl}
@@ -105,6 +106,12 @@ export function StatusPanel({
                 We search every day for 14 days. The number of new matches varies with available opportunities.
               </p>
               <DailyRunStatus view={view} />
+              {view.emailMasked && (
+                <p className="flex items-center gap-2 text-sm/6 text-mist-700 dark:text-mist-400">
+                  <MailIcon className="shrink-0" />
+                  {view.emailUnsubscribed ? 'Email updates are off.' : <>New leads are emailed to {view.emailMasked}</>}
+                </p>
+              )}
               {view.nextRunAt && (
                 <div className="flex flex-col gap-1 border-t border-mist-950/10 pt-4 dark:border-white/10">
                   <p className="flex items-center gap-2 text-sm/7 text-mist-950 dark:text-white">

@@ -18,6 +18,10 @@ create table if not exists public.radars (
   research_started_at timestamptz not null,
   research_ends_at timestamptz not null,
   next_run_at timestamptz,
+  email text,
+  email_added_at timestamptz,
+  email_unsubscribed_at timestamptz,
+  token_ciphertext text, -- AES-GCM encrypted private token, only for links in emails
   constraint research_period check (research_ends_at > research_started_at)
 );
 
@@ -52,11 +56,17 @@ create table if not exists public.research_runs (
   validation_report jsonb,
   raw_response jsonb, -- restricted: diagnosis only
   lease_until timestamptz,
+  email_status text check (email_status in ('pending', 'sending', 'sent', 'skipped', 'failed')),
+  email_attempts integer not null default 0,
+  email_claimed_at timestamptz,
+  email_sent_at timestamptz,
+  email_error text,
   created_at timestamptz not null default now(),
   unique (radar_id, kind, run_key)
 );
 
 create index if not exists research_runs_status_idx on public.research_runs (status, scheduled_at);
+create index if not exists research_runs_email_idx on public.research_runs (email_status) where email_status in ('pending', 'sending');
 
 create table if not exists public.leads (
   id uuid primary key default gen_random_uuid(),

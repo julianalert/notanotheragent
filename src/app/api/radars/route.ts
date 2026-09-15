@@ -19,7 +19,7 @@ export const POST = withErrors(async function postHandler(request: Request) {
   // A different URL on the same domain is allowed only as a correction when the first page couldn't be read.
   const existing = await findRadarByToken(cookieStore.get(RADAR_COOKIE)?.value)
   if (existing && (existing.website === website.url || (existing.website_host === website.host && existing.profile))) {
-    return json({ token: cookieStore.get(RADAR_COOKIE)!.value, reused: true })
+    return json({ token: cookieStore.get(RADAR_COOKIE)!.value, reused: true, hasEmail: Boolean(existing.email) })
   }
 
   if (!rateLimit(`create:${clientKey(request)}`, config.createRateLimitPerHour)) {
@@ -32,7 +32,17 @@ export const POST = withErrors(async function postHandler(request: Request) {
   const timezone = isValidTimeZone(body?.timezone) ? body.timezone : null
   const token = createToken()
   const language = typeof body?.language === 'string' ? body.language.slice(0, 35) : null
-  await createRadar({ tokenHash: hashToken(token), website: website.url, host: website.host, timezone, language })
+  // A second website from the same browser reuses the email already given, unless they unsubscribed.
+  const carriedEmail = existing?.email && !existing.email_unsubscribed_at ? existing.email : null
+  await createRadar({
+    tokenHash: hashToken(token),
+    website: website.url,
+    host: website.host,
+    timezone,
+    language,
+    email: carriedEmail,
+    token,
+  })
 
   cookieStore.set(RADAR_COOKIE, token, {
     httpOnly: true,
@@ -45,5 +55,5 @@ export const POST = withErrors(async function postHandler(request: Request) {
   // Start the research job right away; the scheduled task picks it up if this is interrupted.
   after(() => tick().catch((error) => console.error('tick failed', (error as Error).message)))
 
-  return json({ token }, { status: 201 })
+  return json({ token, hasEmail: Boolean(carriedEmail) }, { status: 201 })
 })

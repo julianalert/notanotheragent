@@ -1,5 +1,6 @@
 import 'server-only'
 import { config } from './config'
+import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
 import type { BusinessProfileT, Focus, LeadT, RunOutcome } from './research/contract'
 import { getProvider } from './research/provider'
@@ -20,6 +21,9 @@ export type RadarRow = {
   research_started_at: Date
   research_ends_at: Date
   next_run_at: Date | null
+  email: string | null
+  email_unsubscribed_at: Date | null
+  token_ciphertext: string | null
 }
 
 export type RunRow = {
@@ -95,6 +99,17 @@ export type RadarView = {
   leads: LeadView[]
   slowRunThresholdMs: number
   sampleData: boolean
+  hasEmail: boolean
+  emailMasked: string | null
+  emailUnsubscribed: boolean
+}
+
+function safeEncrypt(token: string) {
+  try {
+    return encryptToken(token)
+  } catch {
+    return null
+  }
 }
 
 const iso = (value: Date | string | null | undefined) => (value ? new Date(value).toISOString() : null)
@@ -114,6 +129,9 @@ export async function createRadar(input: {
   host: string
   timezone: string | null
   language: string | null
+  /** Carried over from this browser's previous radar so the visitor isn't asked twice. */
+  email?: string | null
+  token?: string
 }) {
   const now = new Date()
   // Immutable: research_ends_at = created_at + 14 × 24 hours.
@@ -123,14 +141,25 @@ export async function createRadar(input: {
   const rows = await query<{ radar_id: string }>(
     `with r as (
        insert into radars (token_hash, website, website_host, output_language, timezone, timezone_inferred,
-         created_at, research_started_at, research_ends_at)
-       values ($1, $2, $3, $4, $5, true, $6, $6, $7)
+         created_at, research_started_at, research_ends_at, email, email_added_at, token_ciphertext)
+       values ($1, $2, $3, $4, $5, true, $6, $6, $7, $8, $9, $10)
        returning id
      )
      insert into research_runs (radar_id, kind, run_key, status, scheduled_at)
      select id, 'initial', 'initial', 'queued', $6 from r
      returning radar_id`,
-    [input.tokenHash, input.website, input.host, language, timezone, now, endsAt],
+    [
+      input.tokenHash,
+      input.website,
+      input.host,
+      language,
+      timezone,
+      now,
+      endsAt,
+      input.email ?? null,
+      input.email ? now : null,
+      input.email && input.token ? safeEncrypt(input.token) : null,
+    ],
   )
   return rows[0].radar_id
 }
@@ -231,6 +260,9 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     })),
     slowRunThresholdMs: config.slowRunThresholdMs,
     sampleData: getProvider().name === 'mock',
+    hasEmail: Boolean(radar.email),
+    emailMasked: radar.email ? maskEmail(radar.email) : null,
+    emailUnsubscribed: Boolean(radar.email_unsubscribed_at),
   }
 }
 
@@ -283,4 +315,32 @@ export async function retryInitialRun(radarId: string) {
     [radarId, config.maxManualRetries],
   )
   return rows[0]?.id ?? null
+}
+
+/**
+ * Store where to email results. The private token is kept encrypted so emails can link to the page;
+ * access control still uses only the token hash. Giving an email again re-subscribes.
+ */
+export async function setRadarEmail(radarId: string, email: string, token: string) {
+  let ciphertext: string | null = null
+  try {
+    ciphertext = encryptToken(token)
+  } catch (error) {
+    // Missing APP_SECRET must not block visitors at the email step; emails wait until it is configured.
+    console.error(JSON.stringify({ event: 'email.config_error', error: (error as Error).message }))
+  }
+  await query(
+    `update radars set email = $2, email_added_at = now(), email_unsubscribed_at = null,
+       token_ciphertext = coalesce($3, token_ciphertext)
+     where id = $1`,
+    [radarId, email, ciphertext],
+  )
+}
+
+export async function unsubscribeRadar(radarId: string) {
+  const rows = await query<{ website_host: string }>(
+    `update radars set email_unsubscribed_at = coalesce(email_unsubscribed_at, now()) where id = $1 returning website_host`,
+    [radarId],
+  )
+  return rows[0] ?? null
 }

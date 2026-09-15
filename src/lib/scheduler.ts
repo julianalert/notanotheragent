@@ -15,6 +15,7 @@ import {
 import { isResearchOpen, qualifyLeads, validateProfile, type QualifiedLead } from './research/gates'
 import { buildResearchInput, type ExcludedOpportunity } from './research/prompt'
 import { getProvider, isRetryable, ResearchError, type ErrorCode, type ResearchProvider, type Usage } from './research/provider'
+import { sendPendingEmails } from './email/deliver'
 import { localDateKey, nextDailyRunAt } from './time'
 
 const MAX_PER_TICK = 20
@@ -42,6 +43,8 @@ export async function tick() {
     if (!run) break
     await checkRun(run)
   }
+  // Email failures must never block research.
+  await sendPendingEmails().catch((error) => log('email.tick_error', { error: (error as Error).message.slice(0, 200) }))
 }
 
 /** Queued work for expired radars is dropped; expired radars stop scheduling. */
@@ -406,7 +409,7 @@ async function saveResults(
     }
     await tx.query(
       `update research_runs set status = 'completed', outcome = $2, usage = $3, cost_usd = $4, coverage = $5,
-         audit_urls = $6, validation_report = $7, raw_response = $8, format_repair_used = $9,
+         audit_urls = $6, validation_report = $7, raw_response = $8, format_repair_used = $9, email_status = $10,
          error_code = null, error = null, completed_at = now(), lease_until = null,
          duration_ms = (extract(epoch from (now() - started_at)) * 1000)::int
        where id = $1`,
@@ -420,6 +423,8 @@ async function saveResults(
         JSON.stringify(report),
         JSON.stringify(raw ?? null),
         repairUsed,
+        // First results are always emailed (they may have closed the tab); daily runs only when there's news.
+        run.kind === 'initial' || published.length > 0 ? 'pending' : 'skipped',
       ],
     )
   })

@@ -390,3 +390,53 @@ describe('research input language', () => {
     expect(input.output_language).not.toMatch(/fr|en-US/)
   })
 })
+
+describe('email delivery helpers', () => {
+  it('round-trips the encrypted private token and rejects tampering', async () => {
+    const { encryptToken, decryptToken } = await import('../crypto')
+    const token = 'aiG66U_ne5CrH2EHe4kELK0VlLj9anY_rK2VgbJfNpE'
+    const sealed = encryptToken(token)
+    expect(sealed).not.toContain(token)
+    expect(decryptToken(sealed)).toBe(token)
+    const parts = sealed.split('.')
+    parts[3] = parts[3].slice(0, -2) + (parts[3].endsWith('AA') ? 'BB' : 'AA')
+    expect(() => decryptToken(parts.join('.'))).toThrow()
+  })
+
+  it('only accepts correctly signed unsubscribe codes', async () => {
+    const { unsubscribeCode, verifyUnsubscribeCode } = await import('../crypto')
+    const radarId = '8aab2618-22c4-4f2d-9a35-a6e1e94f0a61'
+    const code = unsubscribeCode(radarId)
+    expect(verifyUnsubscribeCode(code)).toBe(radarId)
+    expect(verifyUnsubscribeCode(code.replace(radarId, '8aab2618-22c4-4f2d-9a35-a6e1e94f0a62'))).toBeNull()
+    expect(verifyUnsubscribeCode(`${radarId}.forged`)).toBeNull()
+  })
+
+  it('validates and normalises email addresses', async () => {
+    const { normaliseEmail, maskEmail } = await import('../crypto')
+    expect(normaliseEmail(' Jane.Doe@Agency.COM ')).toEqual({ ok: true, email: 'Jane.Doe@agency.com' })
+    expect(normaliseEmail('not-an-email').ok).toBe(false)
+    expect(normaliseEmail('a@b').ok).toBe(false)
+    expect(maskEmail('jane@agency.com')).toBe('j•••@agency.com')
+  })
+
+  it('escapes web-derived lead text in emails', async () => {
+    const { renderRunEmail } = await import('../email/templates')
+    const lead = makeLead({ headline: '<script>alert(1)</script> Need help', public_handle: '"><img src=x onerror=alert(1)>' })
+    const email = renderRunEmail({
+      kind: 'daily',
+      outcome: 'matches',
+      websiteHost: 'cyberleads.com',
+      businessName: 'CyberLeads',
+      leads: [{ id: 'l1', data: lead }],
+      privateUrl: 'https://app.example/r/token',
+      unsubscribeUrl: 'https://app.example/api/unsubscribe/code',
+      daysLeft: 10,
+    })
+    expect(email.subject).toBe('1 new lead for cyberleads.com')
+    expect(email.html).not.toContain('<script>')
+    expect(email.html).not.toContain('<img src=x')
+    expect(email.html).toContain('&lt;script&gt;')
+    expect(email.html).toContain('https://app.example/api/unsubscribe/code')
+  })
+})

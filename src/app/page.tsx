@@ -69,8 +69,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           headline="Wake up to companies that need exactly what your agency sells."
           subheadline={
             <p>
-              We research public requests and business problems to find opportunities that fit your offer. Enter your
-              website to see your first leads.
+              We scan the web for companies publicly signaling they need your services and send the best matches to
+              your inbox every morning.
             </p>
           }
           cta={<WebsiteForm defaultValue={typeof website === 'string' ? website.slice(0, 200) : ''} />}
@@ -88,7 +88,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           subheadline={
             <p>
               Your website already says what you sell. We read it, search the public web for people asking for exactly
-              that, and keep looking every morning for two weeks.
+              that, and email you what we find every morning for two weeks.
             </p>
           }
           features={
@@ -115,11 +115,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
               />
               <Feature
                 icon={<InboxIcon />}
-                headline="New leads every morning"
+                headline="New leads in your inbox every morning"
                 subheadline={
                   <p>
-                    For 14 days we search again at 8:00 in your timezone and add new matches to the same private page.
-                    Some days there are none, and we say so.
+                    For 14 days we search again at 8:00 in your timezone and email you the new matches. Everything is
+                    also saved on your private page. Some days there are none, and we don’t pad the list.
                   </p>
                 }
               />
@@ -198,8 +198,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             question="Do I need an account?"
             answer={
               <p>
-                No. Your results live on a private link. Anyone with the link can see them, so keep it private and
-                bookmark it. We can’t recover it by email.
+                No. Just your website and the email address where we should send your leads. Your results also live on
+                a private link that’s included in every email, so keep those emails private.
+              </p>
+            }
+          />
+          <Faq
+            question="How often will you email me?"
+            answer={
+              <p>
+                Once when your first results are ready, then only on mornings with new matches, for 14 days. Every
+                email has a one-click unsubscribe link.
               </p>
             }
           />
@@ -225,7 +234,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
         <CallToActionSimple
           eyebrow="Free for 14 days · No account"
           headline="See who is asking for what you sell this week."
-          subheadline={<p>Enter your website and your first leads are usually ready in a few minutes.</p>}
+          subheadline={<p>Enter your website and your email. Your first leads usually arrive within minutes.</p>}
           cta={
             <div className="flex items-center gap-4">
               <ButtonLink href="#start" size="lg" color="accent">
