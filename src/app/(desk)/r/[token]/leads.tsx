@@ -74,7 +74,7 @@ export function LeadItem({
       <span className="item__top">
         <IntentTag lead={lead} />
         {note && <span className="tag tag--state">{note}</span>}
-        <span className="item__time">{publishedAgo(d.published_date, now)}</span>
+        <span className="item__time">{d.date_status === 'unknown' ? 'Date not shown' : publishedAgo(d.published_date, now)}</span>
       </span>
       <h3>{d.headline}</h3>
       <q>{quote?.excerpt ?? d.need_summary}</q>
@@ -257,7 +257,7 @@ export function LeadDrawer({
             on <External href={d.source_url}>{hostOf(d.source_url)}</External>
           </span>
           <span>
-            {calendarDate(d.published_date)}, {foundLabel(lead.discoveredAt, now, timezone)}
+            {d.date_status === 'unknown' ? 'Date not shown' : calendarDate(d.published_date)}, {foundLabel(lead.discoveredAt, now, timezone)}
           </span>
         </p>
         <h2 id="drawer-title">{d.headline}</h2>
@@ -273,7 +273,7 @@ export function LeadDrawer({
           <p className="evidence__meta">
             <span>{quote ? 'Their own words' : 'Our paraphrase'}</span>
             <span>
-              Posted {calendarDate(d.published_date)}
+              {d.date_status === 'unknown' ? 'Date not shown' : `Posted ${calendarDate(d.published_date)}`}
               <Cites ids={d.date_evidence_ids} evidence={d.evidence} />
             </span>
             <External href={d.source_url}>Read the source</External>

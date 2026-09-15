@@ -9,7 +9,7 @@
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ResearchResult, type ResearchResultT } from '../src/lib/research/contract'
+import { AUTOMATIC_FOLLOW_UPS, ResearchResult, type ResearchResultT } from '../src/lib/research/contract'
 import { followUpDecision, qualifyCandidates, validateProfile, type PriorOpportunity } from '../src/lib/research/gates'
 import { buildResearchInput, lintQuery } from '../src/lib/research/prompt'
 import { getProvider } from '../src/lib/research/provider'
@@ -104,6 +104,7 @@ async function main() {
   report('initial', initial, q1)
 
   const decision = followUpDecision({
+    enabled: AUTOMATIC_FOLLOW_UPS,
     kind: 'initial',
     researchStatus: initial.result.research_status,
     published: q1?.counts.published ?? 0,

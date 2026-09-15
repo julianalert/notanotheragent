@@ -4,11 +4,43 @@ import { z } from 'zod'
 export const RESEARCH_MODEL = 'gpt-5.5-2026-04-23'
 // v1.1: output_language follows the business website instead of the visitor's browser.
 // v2: acquisition brief, buyer-language search rules, candidate pool with decisions, follow-up angles.
-export const PROMPT_VERSION = 'research-v2'
+// v2.1: qualify on the buyer's goal, not the solution they have in mind; open posts, not only feeds.
+// v2.2: 90-day initial window; undated posts, posts read from community listings and model doubts publish with caveats.
+// v2.2: cost budget: medium reasoning, hard tool-call cap stated in the prompt, capped exclusion list.
+export const PROMPT_VERSION = 'research-v2.2'
 export const SCHEMA_NAME = 'lead_research_v2'
 export const SCHEMA_VERSION = '2'
 // Room for the acquisition brief and a pool of up to 15 candidates on top of high reasoning.
 export const MAX_OUTPUT_TOKENS = 40000
+/** Reasoning effort for research. High roughly doubled reasoning tokens (billed as output) for little gain. */
+export const RESEARCH_REASONING_EFFORT = 'medium'
+/**
+ * Hard cap on hosted tool calls (searches, page opens, find-in-page) per research request. Initial runs also
+ * read the website. The budget is stated in the prompt so the model plans for it instead of being cut off.
+ */
+export const MAX_TOOL_CALLS = { initial: 30, daily: 24, follow_up: 16 } as const
+/** Tool-free schema repair only reshapes existing text: a small model is enough. */
+export const FORMAT_MODEL = 'gpt-5-mini'
+/** Most recent exclusions sent to the model. The local gates still dedupe against every stored lead. */
+export const MAX_EXCLUDED_IN_PROMPT = 40
+/**
+ * Automatic follow-up runs. Off: a follow-up is a second full research request and doubled the cost of weak runs.
+ * The follow-up signal is still recorded in diagnostics.
+ */
+export const AUTOMATIC_FOLLOW_UPS = false
+
+/* Pipeline provider (RESEARCH_PROVIDER=pipeline): the application searches and reads; models read each source once. */
+/** Cheap model for the parallel searches, result triage and the page-reader fallback. */
+export const SEARCH_MODEL = 'gpt-5-mini'
+/** Buyer situations from the acquisition brief searched per run, one small search request each. */
+export const SEARCH_TOPICS = { initial: 12, daily: 10, follow_up: 8 } as const
+/** Search results read in full and handed to the qualification request. */
+export const MAX_SOURCES_TO_READ = 15
+/** Characters kept per source page (about 1,500 tokens). */
+export const SOURCE_PAGE_CHARS = 6000
+/** Website pages read to build the profile (homepage included). */
+export const WEBSITE_PAGES = 6
+export const WEBSITE_PAGE_CHARS = 8000
 /** Leads shown to the user per run. */
 export const TARGET_COUNT = 5
 /** Candidates the model may return per run (qualified, rejected and unresolved together). */

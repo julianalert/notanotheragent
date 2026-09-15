@@ -314,6 +314,42 @@ export function serviceMatch(services: string[], matched: string): 'match' | 'un
 
 export const DATE_FROM_SEARCH_CAVEAT = 'The publication date comes from search results for this post, not from the page itself.'
 export const RELATIVE_DATE_CAVEAT = 'The page shows a relative date; the publication date is approximate.'
+export const DATE_UNKNOWN_CAVEAT = 'The page does not show when this was posted; check it is still current before reaching out.'
+export const FROM_LISTING_CAVEAT = 'Read from the community’s list of posts; the post page itself was not opened.'
+export const MODEL_DOUBT_CAVEAT = 'Worth checking before reaching out:'
+
+const LISTING_SUFFIX = /\/(new|hot|top|rising|latest|search|recent|popular)(\/.*)?$/i
+
+/**
+ * Whether a community listing opened in this run (a subreddit or forum section, possibly its "new" or search
+ * view) contains the source's path, so the post was plausibly read from that list. Same host, and the listing
+ * path must be a real section (never a site's home page).
+ */
+export function listedOnOpenedPage(sourceUrl: string, auditUrls: string[]) {
+  let source: URL
+  try {
+    source = new URL(sourceUrl)
+  } catch {
+    return false
+  }
+  const host = (value: URL) => value.hostname.toLowerCase().replace(/^(www|old|new|m|np)\./, '')
+  const community = (path: string) => {
+    const reddit = path.match(/^\/r\/([^/]+)/i)
+    return reddit ? `/r/${reddit[1].toLowerCase()}` : path.replace(LISTING_SUFFIX, '').replace(/\/+$/, '').toLowerCase()
+  }
+  const sourcePath = source.pathname.toLowerCase()
+  return auditUrls.some((audited) => {
+    let page: URL
+    try {
+      page = new URL(audited)
+    } catch {
+      return false
+    }
+    if (host(page) !== host(source) || /\/comments\//i.test(page.pathname)) return false
+    const section = community(page.pathname)
+    return section.length > 1 && sourcePath.startsWith(`${section}/`)
+  })
+}
 
 /**
  * Quote budget: at most 25 quoted words per original source. Need quotes are kept first; later quotes that would
@@ -344,11 +380,12 @@ export function applyQuoteBudget<T extends Pick<CandidateT, 'evidence' | 'need_e
   return { ...lead, evidence: lead.evidence.map((item) => changed.get(item.id) ?? item) }
 }
 
-type Check = { rejected: string[]; unresolved: string[]; caveats: string[]; clean: CandidateT; sourceUrl: string | null; score: Score }
+type Check = { rejected: string[]; unresolved: string[]; caveats: string[]; clean: CandidateT; sourceUrl: string | null; score: Score; foundOn: string }
 
 /**
  * Checks one candidate. Hard failures reject (invalid source, undocumented service, outside the window, closed,
- * or a model rejection); verification gaps leave it unresolved (identity, date, evidence, audit, contact route).
+ * or a model rejection); verification gaps leave it unresolved (identity, evidence, audit, contact route). An
+ * unknown date, a post read from a community listing, or the model's own doubts are published with caveats.
  */
 export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys: Set<string | null>): Check {
   const rejected: string[] = []
@@ -365,15 +402,20 @@ export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys
   }
   const resolves = (ids: string[]) => ids.length > 0 && ids.every((id) => evidence.has(id))
 
-  // Model decision first: its rejections stand; its unresolved candidates stay unresolved.
+  // Model decision first: its rejections stand. Its doubts don't block on their own: when every check below
+  // passes, the candidate is published with the doubts shown, ranked after candidates the model qualified.
   if (candidate.decision === 'rejected') rejected.push(...(candidate.decision_reasons.length ? candidate.decision_reasons : ['rejected by research']))
-  if (candidate.decision === 'unresolved') unresolved.push(...(candidate.decision_reasons.length ? candidate.decision_reasons : ['needs verification']))
+  if (candidate.decision === 'unresolved') {
+    const doubts = candidate.missing_info.length ? candidate.missing_info : candidate.decision_reasons
+    caveats.push(doubts.length ? `${MODEL_DOUBT_CAVEAT} ${doubts.join('; ')}` : MODEL_DOUBT_CAVEAT)
+  }
 
-  // Source.
+  // Source: opened in this run, or listed on a community page opened in this run (e.g. a subreddit's new posts).
   const sourceUrl = safeOutgoingUrl(candidate.source_url)
   if (!sourceUrl) rejected.push('source URL is not a public http(s) URL')
   else if (!auditKeysFor(sourceUrl).some((key) => auditKeys.has(key))) {
-    unresolved.push('source not found in the search tool audit — needs verification')
+    if (listedOnOpenedPage(sourceUrl, ctx.auditUrls)) caveats.push(FROM_LISTING_CAVEAT)
+    else unresolved.push('source not found in the search tool audit — needs verification')
   }
 
   // Identity: a public handle is enough; unsupported company or person names are removed, not fatal.
@@ -408,7 +450,9 @@ export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys
   const today = parseIsoDate(ctx.now.toISOString().slice(0, 10))!
   const published = parseIsoDate(normalisedDate)
   if (candidate.date_status === 'unknown' || !published) {
-    unresolved.push('publication date unknown')
+    // The research rejects pages that look old or closed; an undated page is published with the gap shown.
+    candidate = { ...candidate, date_status: 'unknown', published_date: null }
+    caveats.push(DATE_UNKNOWN_CAVEAT)
   } else {
     if (published.getTime() > today.getTime() + DAY_MS) rejected.push('publication date is in the future')
     if (published.getTime() < parseIsoDate(ctx.publishedOnOrAfter)!.getTime()) rejected.push('published before the date window')
@@ -450,13 +494,13 @@ export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys
   const score = {
     intent: clamp(candidate.score.intent, 3),
     service_fit: clamp(candidate.score.service_fit, 3),
-    freshness: normalisedDate ? freshnessFor(normalisedDate, ctx.now) : 0,
+    freshness: candidate.published_date ? freshnessFor(candidate.published_date, ctx.now) : 0,
     contactability: clamp(candidate.score.contactability, 2),
     total: 0,
   }
   score.total = score.intent + score.service_fit + score.freshness + score.contactability
 
-  return { rejected, unresolved, caveats, clean: candidate, sourceUrl, score }
+  return { rejected, unresolved, caveats, clean: candidate, sourceUrl, score, foundOn: ctx.now.toISOString().slice(0, 10) }
 }
 
 /**
@@ -498,6 +542,7 @@ export function qualifyCandidates(candidates: CandidateT[], ctx: GateContext) {
 
   passing.sort(
     (a, b) =>
+      Number(b.check.clean.decision === 'qualified') - Number(a.check.clean.decision === 'qualified') ||
       b.check.score.total - a.check.score.total ||
       Number(b.check.clean.intent === 'explicit_request') - Number(a.check.clean.intent === 'explicit_request') ||
       (b.check.clean.published_date ?? '').localeCompare(a.check.clean.published_date ?? ''),
@@ -560,7 +605,8 @@ function toLead(check: Check): LeadT {
   return {
     ...rest,
     source_url: check.sourceUrl!,
-    published_date: c.published_date!,
+    // Undated pages (date_status "unknown") carry the day they were found, which the page shows as "date not shown".
+    published_date: c.published_date ?? check.foundOn,
     company_website: c.company_website ? safeOutgoingUrl(c.company_website) : null,
     contact_route: {
       url: safeOutgoingUrl(c.contact_route.url)!,
@@ -576,10 +622,13 @@ function toLead(check: Check): LeadT {
 /* ------------------------------- Follow-up -------------------------------- */
 
 /**
- * At most one follow-up per run, only after a completed initial or daily run with fewer than three published
- * leads, when the evidence shows a concrete next step, and only while research is open.
+ * At most one follow-up per run, only after a completed initial or daily run with at most one published lead,
+ * when the research itself calls a follow-up worthwhile and names a concrete next step, and only while research
+ * is open. A follow-up is a full research request, so it is reserved for runs that came up nearly empty.
  */
 export function followUpDecision(args: {
+  /** AUTOMATIC_FOLLOW_UPS */
+  enabled: boolean
   kind: 'initial' | 'daily' | 'follow_up'
   researchStatus: string
   published: number
@@ -588,14 +637,15 @@ export function followUpDecision(args: {
   worthwhile: boolean
   researchOpen: boolean
 }): { run: boolean; reason: string } {
+  if (!args.enabled) return { run: false, reason: 'automatic follow-ups are disabled' }
   if (args.kind === 'follow_up') return { run: false, reason: 'follow-ups never chain' }
   if (!args.researchOpen) return { run: false, reason: 'research period ended' }
   if (args.researchStatus === 'website_unreadable' || args.researchStatus === 'unsupported_business') {
     return { run: false, reason: `research status ${args.researchStatus}` }
   }
-  if (args.published >= 3) return { run: false, reason: 'three or more leads already published' }
+  if (args.published >= 2) return { run: false, reason: 'two or more leads already published' }
   if (!args.untriedAngles.length && !args.unresolved) return { run: false, reason: 'no untried angles or unresolved candidates' }
-  if (!args.worthwhile && !args.unresolved) return { run: false, reason: 'research reported no plausible next step' }
+  if (!args.worthwhile) return { run: false, reason: 'research reported no plausible next step' }
   return {
     run: true,
     reason: `${args.published} published; ${args.unresolved} unresolved candidate(s) and ${args.untriedAngles.length} untried angle(s)`,

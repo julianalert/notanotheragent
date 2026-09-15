@@ -45,7 +45,7 @@ Implements the research engine spec (`research-v1`, schema `lead_research_v1`).
 | Qualification fixtures (§1.8, §2.2) | `src/lib/research/gates.test.ts` |
 | Run lifecycle, retries, deadlines, atomic persistence | `src/lib/scheduler.ts` |
 
-**Normal path:** one background research request (`gpt-5.5-2026-04-23`, high reasoning, `web_search` with live access, strict schema). Then local parsing and gates. If the output has formatting defects, one tool-free repair is allowed before expiry. The gates then run again against the original search audit, so a repair can't add evidence.
+**Normal path:** one background research request (`gpt-5.5-2026-04-23`, medium reasoning, `web_search` with live access and a per-mode tool-call cap, strict schema). Then local parsing and gates. If the output has formatting defects, one tool-free repair (`gpt-5-mini`) is allowed before expiry. The gates then run again against the original search audit, so a repair can't add evidence.
 
 **Outcomes:**
 - `matches` and `no_matches` count as successful research and advance the daily watermark.

@@ -1,4 +1,4 @@
-import { MAX_CANDIDATES, TARGET_COUNT, type BusinessProfileT, type Focus } from './contract'
+import { MAX_CANDIDATES, MAX_EXCLUDED_IN_PROMPT, MAX_TOOL_CALLS, TARGET_COUNT, type BusinessProfileT, type Focus } from './contract'
 
 // Input contract. All values are application-computed, never model-invented.
 export type ExcludedOpportunity = {
@@ -26,6 +26,7 @@ export type ResearchInput = {
   last_successful_run_at: string | null
   target_count: typeof TARGET_COUNT
   max_candidates: typeof MAX_CANDIDATES
+  max_tool_calls: number
   profile: BusinessProfileT | null
   excluded_opportunities: ExcludedOpportunity[]
   previous_candidates: PreviousCandidate[]
@@ -41,14 +42,14 @@ export type ResearchInput = {
 export const WEBSITE_LANGUAGE =
   'the primary language of the content at website_url (write the profile, brief, fit explanations and coverage notes in it)'
 
-export const INITIAL_WINDOW_DAYS = 30
+export const INITIAL_WINDOW_DAYS = 90
 export const DAILY_OVERLAP_HOURS = 72
 const DAY_MS = 86_400_000
 
 const isoDay = (date: Date) => date.toISOString().slice(0, 10)
 
 /**
- * Initial: 30-day window. Daily: max(today − 30 days, date(last_successful_run_at − 72 h)).
+ * Initial: 90-day window (public posts stay answerable for months). Daily: max(today − 90 days, date(last_successful_run_at − 72 h)).
  * Without a successful run, the initial window applies.
  */
 export function publishedOnOrAfter(now: Date, lastSuccessfulRunAt: Date | null) {
@@ -92,6 +93,17 @@ operator, not the operator's clients. A company asking to hire a provider in the
 operator's prospect, not this business's prospect, unless there is separate evidence it is itself a suitable
 buyer. An operator describing an empty pipeline, unreliable referrals, time-consuming prospecting, or whatever
 problem the offer solves can qualify without naming this business's product category.
+
+Qualify on the goal, not on the solution the author has in mind. Buyers rarely ask for this business's exact
+offer; they describe the outcome they want (more income, more clients, less admin, more sales, a problem
+fixed) and often name some other route to it (hiring someone, a tool, advice, a different tactic). When the
+author matches the buyer profile and the documented offer credibly delivers the outcome they want, that is a
+buyer need: qualify it as stated_problem, even if they currently ask for a different solution, and use the
+fit explanation and outreach angle to connect their goal to the offer. buyer_problems_in_their_words and
+explicit_requests must therefore include goal-level phrasings (what they want to achieve or what is not
+working), not only requests for this kind of product. Reject for "wrong need" only when the author's goal
+itself is unrelated to what the offer achieves, when the offer's documented exclusions rule them out, or when
+they explicitly refuse this kind of solution.
 Eligibility: the question is whether the offer's buyers express needs in public. Software, products and
 services all qualify, including software sold to service businesses. Use research_status
 "unsupported_business" only when no plausible public buyer need exists for this offer. Use
@@ -112,8 +124,12 @@ services all qualify, including software sold to service businesses. Use researc
 - Adapt: when results are irrelevant, inaccessible or dominated by sellers and vendors, change the angle,
   wording or source type. Do not repeat near-identical queries.
 - Never broaden the buyer, offer or geography to get more results. Record narrowing limitations instead.
-A practical effort is roughly 10-16 searches plus opening the most promising sources. Stop early when you
-have enough strong candidates.
+TOOL BUDGET: max_tool_calls is a hard limit on all tool calls together (searches, opened pages, find in page).
+Calls beyond it fail. Plan for it: spend roughly half on searches and half on opening the most promising
+sources, keep a few in reserve to open final candidates, and stop searching once you have enough strong
+candidates. Do not open pages that search results already show to be irrelevant. Listing and feed
+pages (such as a community's newest posts) are for discovery only: open each candidate's own post page
+before recording it.
 
 4. KEEP A CANDIDATE POOL, THEN DECIDE
 Return up to max_candidates promising candidates you actually inspected or came close to verifying, not only
@@ -134,14 +150,18 @@ winners. Fewer is valid. Never fabricate candidates to fill the pool. For each o
 - intent: "explicit_request" when they ask for help, a provider, a tool or a recommendation;
   "stated_problem" when they describe a current relevant problem (buying intent is inferred, not confirmed).
 - decision:
-  "qualified": identifiable public author or organisation matching the buyer profile, a concrete need the
-    documented services plausibly address, inspectable evidence, a usable approach route, and a publication
-    date inside the window.
+  "qualified": identifiable public author or organisation matching the buyer profile, a concrete goal or
+    problem the documented offer plausibly delivers or solves (whatever solution they currently have in mind),
+    inspectable evidence and a usable approach route. The date must not be known to be before the window; an
+    undated page qualifies when nothing on it suggests the post is old, closed or resolved. Details the author
+    did not share (audience size, budget, exact date, company) are not a reason to withhold qualification:
+    qualify and list them in missing_info.
   "rejected": fabricated or unsupported need, seller or vendor promotion, wrong customer type (including the
     buyer's customer), explicit disinterest, closed/filled/expired request, clear geographic mismatch, published
     before the window, or a duplicate of an excluded opportunity or cross-post.
-  "unresolved": promising but something needs verification (date unknown, page not accessible, identity hidden,
-    fit unclear). Explain what is missing in missing_info and access_limitations.
+  "unresolved": only when something essential could not be checked: the post could not be read, the author is
+    not identifiable at all, or there is no way to reply. Explain what is missing in missing_info and
+    access_limitations.
   decision_reasons: short, specific reasons.
 - score (0-3 intent, 0-3 service_fit, 0-2 freshness, 0-2 contactability) ranks candidates only.
 - For qualified candidates write outreach_angle and a 50-90 word outreach_message in the lead's language
@@ -163,7 +183,7 @@ candidates, follow_up and coverage (limitations, access_failures for sources you
 rejection_summary). Do not include private reasoning. All assessments are yours, not independent verification.`
 
 export const INITIAL_RUN_INSTRUCTIONS = `Build the business profile and acquisition brief from website_url, then research the strongest current
-opportunities inside the date window, prioritising the last 7 days. Search explicit requests and first-person
+opportunities inside the date window, prioritising the most recent. Search explicit requests and first-person
 problems in parallel from the first searches. Return the candidate pool with decisions.`
 
 export const DAILY_RUN_INSTRUCTIONS = `Use the supplied profile. If it has no acquisition brief, build one from its facts and return the profile
@@ -172,7 +192,7 @@ successful run while respecting published_on_or_after. Rotate angles from the br
 repeat identical queries. Exclude all previous opportunities and cross-posts. Return the candidate pool with
 decisions. An honest empty pool is valid.`
 
-export const FOLLOW_UP_RUN_INSTRUCTIONS = `This is a single follow-up to a run that produced fewer than ${3} qualified candidates. Use the supplied
+export const FOLLOW_UP_RUN_INSTRUCTIONS = `This is a single follow-up to a run that produced at most one qualified lead. Use the supplied
 profile and return it unchanged. Do not repeat previous_queries or re-report previous_candidates unless you
 resolved one of them. First try to verify the unresolved previous candidates (date, identity, access). Then
 pursue untried_angles with new wording and different source types. Return only new or newly resolved
@@ -193,6 +213,17 @@ export function focusInstructions(focus: Focus | null) {
   return lines.join('\n')
 }
 
+/**
+ * The exclusion list is re-read at every research step, so it is capped: opportunities published before the
+ * window cannot qualify again, and only the most recent ones are sent. The local gates still dedupe against
+ * every stored lead. Input is ordered oldest first.
+ */
+export function excludedForPrompt(excluded: ExcludedOpportunity[], windowStart: string) {
+  return excluded
+    .filter((item) => !item.published_date || item.published_date >= windowStart)
+    .slice(-MAX_EXCLUDED_IN_PROMPT)
+}
+
 export function buildResearchInput(args: {
   mode: 'initial' | 'daily' | 'follow_up'
   now: Date
@@ -208,6 +239,7 @@ export function buildResearchInput(args: {
   windowStart?: string
 }): ResearchInput {
   const initial = args.mode === 'initial'
+  const window = args.windowStart ?? publishedOnOrAfter(args.now, args.mode === 'daily' ? args.lastSuccessfulRunAt : null)
   const instructions =
     args.mode === 'initial' ? INITIAL_RUN_INSTRUCTIONS : args.mode === 'daily' ? DAILY_RUN_INSTRUCTIONS : FOLLOW_UP_RUN_INSTRUCTIONS
   return {
@@ -215,13 +247,13 @@ export function buildResearchInput(args: {
     now_utc: args.now.toISOString(),
     website_url: args.websiteUrl,
     output_language: WEBSITE_LANGUAGE,
-    published_on_or_after:
-      args.windowStart ?? publishedOnOrAfter(args.now, args.mode === 'daily' ? args.lastSuccessfulRunAt : null),
+    published_on_or_after: window,
     last_successful_run_at: initial ? null : (args.lastSuccessfulRunAt?.toISOString() ?? null),
     target_count: TARGET_COUNT,
     max_candidates: MAX_CANDIDATES,
+    max_tool_calls: MAX_TOOL_CALLS[args.mode],
     profile: initial ? null : args.profile,
-    excluded_opportunities: args.excluded,
+    excluded_opportunities: excludedForPrompt(args.excluded, window),
     previous_candidates: args.previousCandidates ?? [],
     previous_queries: args.previousQueries ?? [],
     untried_angles: args.untriedAngles ?? [],

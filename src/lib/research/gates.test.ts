@@ -4,6 +4,9 @@ import {
   applyQuoteBudget,
   canonicalUrl,
   DATE_FROM_SEARCH_CAVEAT,
+  DATE_UNKNOWN_CAVEAT,
+  FROM_LISTING_CAVEAT,
+  listedOnOpenedPage,
   followUpDecision,
   freshnessFor,
   isResearchOpen,
@@ -177,11 +180,13 @@ describe('required regression cases', () => {
     expect(result.outcomes.find((o) => o.decision === 'rejected')!.reasons).toContain('duplicate of an existing opportunity')
   })
 
-  it('8. an undated candidate is preserved as unresolved, not erased or presented as fresh', () => {
+  it('8. an undated candidate is kept, never presented as fresh (published with the missing date shown)', () => {
     const result = run([makeCandidate({ published_date: null, date_status: 'unknown', date_evidence_ids: [] })])
-    expect(result.published).toHaveLength(0)
-    expect(result.outcomes[0].decision).toBe('unresolved')
-    expect(result.outcomes[0].reasons).toContain('publication date unknown')
+    expect(result.outcomes[0].decision).toBe('published')
+    const lead = result.published[0].lead
+    expect(lead.date_status).toBe('unknown')
+    expect(lead.caveats).toContain(DATE_UNKNOWN_CAVEAT)
+    expect(result.published[0].score.freshness).toBe(0)
   })
 
   it('9. a search started at or after the 14-day deadline is blocked, including follow-ups', () => {
@@ -190,6 +195,7 @@ describe('required regression cases', () => {
     expect(isResearchOpen(endsAt, endsAt)).toBe(false)
     expect(isResearchOpen(new Date(endsAt.getTime() + 1), endsAt)).toBe(false)
     const decision = followUpDecision({
+      enabled: true,
       kind: 'initial',
       researchStatus: 'complete',
       published: 0,
@@ -210,7 +216,7 @@ describe('qualification rules', () => {
       makeCandidate({ published_date: null, date_status: 'unknown' }),
       makeCandidate({ decision: 'rejected', decision_reasons: ['seller'] }),
     ])
-    expect(result.counts).toMatchObject({ discovered: 4, published: 1, unresolved: 1, rejected: 2 })
+    expect(result.counts).toMatchObject({ discovered: 4, published: 2, unresolved: 0, rejected: 2 })
     expect(result.outcomes.every((o) => o.decision === 'published' || o.reasons.length > 0)).toBe(true)
   })
 
@@ -219,6 +225,27 @@ describe('qualification rules', () => {
     expect(decisionOf([lowScore]).decision).toBe('published')
     const strong = makeCandidate({ intent: 'explicit_request', score: { intent: 3, service_fit: 3, freshness: 2, contactability: 2 } })
     expect(run([lowScore, strong]).published[0].lead.headline).toBe(strong.headline)
+  })
+
+  it('publishes a model "unresolved" whose doubts are only missing details, after qualified ones, with the doubts shown', () => {
+    const doubtful = makeCandidate({ decision: 'unresolved', decision_reasons: ['fit unclear'], missing_info: ['follower count not stated'], score: { intent: 3, service_fit: 3, freshness: 2, contactability: 2 } })
+    const qualified = makeCandidate({ score: { intent: 1, service_fit: 1, freshness: 2, contactability: 1 } })
+    const result = run([doubtful, qualified])
+    expect(result.counts.published).toBe(2)
+    expect(result.published[0].lead.headline).toBe(qualified.headline)
+    expect(result.published[1].lead.caveats.join(' ')).toContain('follower count not stated')
+  })
+
+  it('a post read from a community listing opened in the run is published with a caveat', () => {
+    const url = 'https://www.reddit.com/r/InstagramMarketing/comments/1wflrx8/would_love_to_know_more_info_about_the_carousel/'
+    const listing = 'https://www.reddit.com/r/InstagramMarketing/new/?after=abc&sort=new'
+    const outcome = decisionOf([makeCandidate({ source_url: url })], { auditUrls: [listing] })
+    expect(outcome.decision).toBe('published')
+    expect(run([makeCandidate({ source_url: url })], { auditUrls: [listing] }).published[0].lead.caveats).toContain(FROM_LISTING_CAVEAT)
+    expect(listedOnOpenedPage(url, ['https://www.reddit.com/r/Entrepreneur/new/'])).toBe(false)
+    expect(listedOnOpenedPage(url, ['https://www.reddit.com/'])).toBe(false)
+    expect(listedOnOpenedPage(url, ['https://www.reddit.com/r/InstagramMarketing/comments/1other/x/'])).toBe(false)
+    expect(listedOnOpenedPage('https://forum.example.org/c/general/t/123', ['https://forum.example.org/c/general/latest'])).toBe(true)
   })
 
   it('a missing audit match is a verification issue, not proof of fabrication', () => {
@@ -397,14 +424,15 @@ describe('helpers', () => {
     expect(SYSTEM_PROMPT).toMatch(/unsupported_business/)
   })
 
-  it('daily window is max(today − 30 days, last success − 72 h)', () => {
-    expect(publishedOnOrAfter(NOW, null)).toBe('2026-08-16')
+  it('initial window is 90 days; daily is max(today − 90 days, last success − 72 h)', () => {
+    expect(publishedOnOrAfter(NOW, null)).toBe('2026-06-17')
     expect(publishedOnOrAfter(NOW, new Date('2026-09-14T08:00:00Z'))).toBe('2026-09-11')
-    expect(publishedOnOrAfter(NOW, new Date('2026-07-01T08:00:00Z'))).toBe('2026-08-16')
+    expect(publishedOnOrAfter(NOW, new Date('2026-05-01T08:00:00Z'))).toBe('2026-06-17')
   })
 
-  it('follow-up runs at most once, only with fewer than three leads and a concrete next step', () => {
+  it('follow-up runs at most once, only with at most one lead and a concrete next step', () => {
     const base = {
+      enabled: true,
       kind: 'initial' as const,
       researchStatus: 'complete',
       published: 1,
@@ -414,7 +442,10 @@ describe('helpers', () => {
       researchOpen: true,
     }
     expect(followUpDecision(base).run).toBe(true)
-    expect(followUpDecision({ ...base, published: 3 }).run).toBe(false)
+    expect(followUpDecision({ ...base, enabled: false })).toEqual({ run: false, reason: 'automatic follow-ups are disabled' })
+    expect(followUpDecision({ ...base, published: 0 }).run).toBe(true)
+    expect(followUpDecision({ ...base, published: 2 }).run).toBe(false)
+    expect(followUpDecision({ ...base, worthwhile: false, unresolved: 2 }).run).toBe(false)
     expect(followUpDecision({ ...base, kind: 'follow_up' }).run).toBe(false)
     expect(followUpDecision({ ...base, untriedAngles: [] }).run).toBe(false)
     expect(followUpDecision({ ...base, worthwhile: false }).run).toBe(false)
@@ -425,6 +456,22 @@ describe('helpers', () => {
     expect(lintQuery('site:reddit.com agency clients')).toContain('site-restricted')
     expect(lintQuery('posted looking for agency')).toContain('"posted" term')
     expect(lintQuery('"referrals dried up" agency')).toEqual([])
+  })
+
+  it('research input caps exclusions to the window and the most recent entries', () => {
+    const item = (i: number, published_date: string | null) => ({
+      source_url: `https://x.example.org/${i}`,
+      author_or_company: `a${i}`,
+      need_summary: 'n',
+      published_date,
+      status: 'new' as const,
+    })
+    const excluded = [item(0, '2026-01-01'), item(1, null), ...Array.from({ length: 50 }, (_, i) => item(i + 2, '2026-09-01'))]
+    const input = buildResearchInput({ mode: 'daily', now: NOW, websiteUrl: WEBSITE, lastSuccessfulRunAt: null, profile, excluded, focus: null })
+    expect(input.excluded_opportunities).toHaveLength(40)
+    expect(input.excluded_opportunities.at(-1)?.source_url).toBe('https://x.example.org/51')
+    expect(input.excluded_opportunities.some((e) => e.published_date === '2026-01-01')).toBe(false)
+    expect(input.max_tool_calls).toBe(24)
   })
 
   it('research input follows the website language and carries follow-up context', () => {

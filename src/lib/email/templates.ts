@@ -65,7 +65,7 @@ function leadHtml(lead: { id: string; data: LeadT }, privateUrl: string) {
   <tr><td style="padding:0 0 12px">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SOFT};border-radius:12px">
       <tr><td style="padding:20px 22px">
-        <p style="margin:0 0 8px;font:600 12px/18px Inter,Arial,sans-serif;color:${MUTED}">${escapeHtml(label)} · ${escapeHtml(d.source_platform)} · Published ${escapeHtml(formatDate(d.published_date))}</p>
+        <p style="margin:0 0 8px;font:600 12px/18px Inter,Arial,sans-serif;color:${MUTED}">${escapeHtml(label)} · ${escapeHtml(d.source_platform)} · ${d.date_status === 'unknown' ? 'Date not shown' : `Published ${escapeHtml(formatDate(d.published_date))}`}</p>
         <p style="margin:0 0 6px;font:500 17px/24px Inter,Arial,sans-serif;color:${INK}">${escapeHtml(d.headline)}</p>
         <p style="margin:0 0 12px;font:400 13px/20px Inter,Arial,sans-serif;color:${MUTED}">${escapeHtml(who)}</p>
         ${quote ? `<p style="margin:0 0 14px;padding-left:12px;border-left:2px solid ${LINE};font:400 14px/22px Inter,Arial,sans-serif;color:${INK}">“${escapeHtml(quote.excerpt)}”</p>` : ''}
@@ -120,7 +120,7 @@ export function renderRunEmail(input: RunEmailInput) {
     intro,
     '',
     ...input.leads.flatMap((lead) => [
-      `- ${lead.data.headline} (${lead.data.source_platform}, published ${formatDate(lead.data.published_date)})`,
+      `- ${lead.data.headline} (${lead.data.source_platform}, ${lead.data.date_status === 'unknown' ? 'date not shown' : `published ${formatDate(lead.data.published_date)}`})`,
       `  ${input.privateUrl}#lead-${lead.id}`,
     ]),
     '',

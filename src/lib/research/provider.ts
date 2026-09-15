@@ -1,6 +1,14 @@
 import OpenAI, { APIConnectionError, APIError } from 'openai'
 import { zodTextFormat } from 'openai/helpers/zod'
-import { MAX_OUTPUT_TOKENS, RESEARCH_MODEL, ResearchResult, SCHEMA_NAME } from './contract'
+import {
+  FORMAT_MODEL,
+  MAX_OUTPUT_TOKENS,
+  MAX_TOOL_CALLS,
+  RESEARCH_MODEL,
+  RESEARCH_REASONING_EFFORT,
+  ResearchResult,
+  SCHEMA_NAME,
+} from './contract'
 import { mockProvider } from './mock'
 import { SYSTEM_PROMPT, type ResearchInput } from './prompt'
 
@@ -143,10 +151,12 @@ function openAIProvider(): ResearchProvider {
         // Exact call shape (spec §1.1). Call only after obtaining the run lease and checking expiry.
         const response = await openai().responses.create({
           model: RESEARCH_MODEL,
-          reasoning: { effort: 'high' },
+          reasoning: { effort: RESEARCH_REASONING_EFFORT },
           background: true,
           store: true,
           max_output_tokens: MAX_OUTPUT_TOKENS,
+          // Supported by the Responses API but missing from this SDK version's create params type.
+          ...({ max_tool_calls: MAX_TOOL_CALLS[input.mode] } as object),
           tools: [{ type: 'web_search', external_web_access: true }],
           tool_choice: 'auto',
           include: ['web_search_call.action.sources'],
@@ -206,7 +216,8 @@ function openAIProvider(): ResearchProvider {
       try {
         const response = await openai().responses.create(
           {
-            model: RESEARCH_MODEL,
+            model: FORMAT_MODEL,
+            reasoning: { effort: 'low' },
             tools: [],
             max_output_tokens: MAX_OUTPUT_TOKENS,
             instructions: FORMAT_INSTRUCTION,

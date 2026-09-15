@@ -3,6 +3,7 @@ import { config } from './config'
 import { query, transaction } from './db'
 import type { RadarRow, RunRow } from './radars'
 import {
+  AUTOMATIC_FOLLOW_UPS,
   MAX_CANDIDATES,
   PROMPT_VERSION,
   ResearchResult,
@@ -446,6 +447,7 @@ async function saveResults(
 
   const published = qualified?.published ?? []
   const followUp = followUpDecision({
+    enabled: AUTOMATIC_FOLLOW_UPS,
     kind: run.kind,
     researchStatus: result.research_status,
     published: published.length,
