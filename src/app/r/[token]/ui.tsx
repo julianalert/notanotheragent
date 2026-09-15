@@ -1,5 +1,6 @@
 'use client'
 
+import { Wallpaper } from '@/components/elements/wallpaper'
 import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import { Squares2StackedIcon } from '@/components/icons/squares-2-stacked-icon'
 import { clsx } from 'clsx/lite'
@@ -30,6 +31,17 @@ export function formatCalendarDate(value: string) {
   return new Intl.DateTimeFormat(LOCALE, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(
     new Date(`${value.slice(0, 10)}T00:00:00Z`),
   )
+}
+
+/** "Today", "Yesterday", "3 days ago" for calendar dates, relative to `now`. */
+export function relativeCalendarDate(value: string, now: string) {
+  const day = Date.parse(`${value.slice(0, 10)}T00:00:00Z`)
+  const today = Date.parse(`${now.slice(0, 10)}T00:00:00Z`)
+  const days = Math.round((today - day) / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days} days ago`
+  return formatCalendarDate(value)
 }
 
 export function localDateKey(value: string | Date, timeZone: string) {
@@ -78,23 +90,18 @@ export function CopyButton({
   copiedLabel = 'Copied',
   variant = 'soft',
   className,
-  onCopied,
 }: {
   text: string
   label: ReactNode
   copiedLabel?: ReactNode
   variant?: 'soft' | 'solid'
   className?: string
-  onCopied?: () => void
 }) {
   const { copied, copy } = useCopy()
   return (
     <button
       type="button"
-      onClick={async () => {
-        await copy(text)
-        onCopied?.()
-      }}
+      onClick={() => copy(text)}
       className={clsx(
         'inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-3 py-1 text-sm/7 font-medium',
         variant === 'soft' &&
@@ -119,6 +126,7 @@ export function Spinner({ className }: { className?: string }) {
   )
 }
 
+/** Oatmeal badge (from Plan): soft pill; solid for the strongest signal; outline for metadata. */
 export function Badge({ className, tone = 'soft', ...props }: ComponentProps<'span'> & { tone?: 'soft' | 'solid' | 'outline' }) {
   return (
     <span
@@ -134,8 +142,38 @@ export function Badge({ className, tone = 'soft', ...props }: ComponentProps<'sp
   )
 }
 
+/** Oatmeal card surface (Plan, FeatureThreeColumnWithDemos). */
 export function Panel({ className, ...props }: ComponentProps<'div'>) {
-  return <div className={clsx('rounded-xl bg-mist-950/2.5 p-6 dark:bg-white/5', className)} {...props} />
+  return <div className={clsx('rounded-lg bg-mist-950/2.5 p-6 dark:bg-white/5', className)} {...props} />
+}
+
+/**
+ * Oatmeal's framed demo: a noisy wallpaper gradient with a translucent app surface inside, as used by
+ * Screenshot and the feature demos. The frame supplies the colour; the surface keeps text readable in both themes.
+ */
+export function Framed({
+  color,
+  className,
+  surfaceClassName,
+  children,
+}: {
+  color: 'green' | 'blue' | 'purple' | 'brown'
+  className?: string
+  surfaceClassName?: string
+  children: ReactNode
+}) {
+  return (
+    <Wallpaper color={color} className={clsx('rounded-sm p-4 sm:p-8', className)}>
+      <div
+        className={clsx(
+          'rounded-md bg-white/85 ring-1 ring-black/5 backdrop-blur-sm dark:bg-mist-950/85 dark:ring-white/10',
+          surfaceClassName,
+        )}
+      >
+        {children}
+      </div>
+    </Wallpaper>
+  )
 }
 
 export function ExternalLink({ href, className, ...props }: { href: string } & Omit<ComponentProps<'a'>, 'href'>) {

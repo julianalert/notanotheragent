@@ -1,5 +1,6 @@
-import { Container } from '@/components/elements/container'
-import NextLink from 'next/link'
+import { FooterCategory, FooterLink, FooterWithLinkCategories } from '@/components/sections/footer-with-link-categories'
+import { NavbarLogo, NavbarWithLogoActionsAndLeftAlignedLinks } from '@/components/sections/navbar-with-logo-actions-and-left-aligned-links'
+import type { ReactNode } from 'react'
 
 export function Logo() {
   return (
@@ -15,27 +16,44 @@ export function Logo() {
   )
 }
 
-export function SiteHeader() {
+export function SiteNavbar({ links, actions }: { links?: ReactNode; actions?: ReactNode }) {
   return (
-    <header className="bg-mist-100 dark:bg-mist-950">
-      <Container className="flex h-20 items-center">
-        <NextLink href="/" className="inline-flex items-stretch" aria-label="Lead Radar home">
+    <NavbarWithLogoActionsAndLeftAlignedLinks
+      id="navbar"
+      logo={
+        <NavbarLogo href="/" aria-label="Lead Radar home">
           <Logo />
-        </NextLink>
-      </Container>
-    </header>
+        </NavbarLogo>
+      }
+      links={links ?? null}
+      actions={actions ?? null}
+    />
   )
 }
 
 export function SiteFooter() {
   return (
-    <footer className="pt-16">
-      <div className="bg-mist-950/2.5 py-10 dark:bg-white/5">
-        <Container className="flex flex-col items-center justify-between gap-4 text-sm/7 text-mist-600 sm:flex-row dark:text-mist-500">
-          <p>Lead Radar researches public sources. It never contacts anyone on your behalf.</p>
-          <p>Free research for 14 days · No account</p>
-        </Container>
-      </div>
-    </footer>
+    <FooterWithLinkCategories
+      id="footer"
+      links={
+        <>
+          <FooterCategory title="Lead Radar">
+            <FooterLink href="/#how-it-works">How it works</FooterLink>
+            <FooterLink href="/#every-lead">What every lead includes</FooterLink>
+            <FooterLink href="/#faq">Questions</FooterLink>
+          </FooterCategory>
+          <FooterCategory title="Your research">
+            <FooterLink href="/#start">Start a search</FooterLink>
+            <li className="text-mist-700 dark:text-mist-400">Free for 14 days</li>
+            <li className="text-mist-700 dark:text-mist-400">No account needed</li>
+          </FooterCategory>
+          <FooterCategory title="Privacy">
+            <li className="text-mist-700 dark:text-mist-400">Private link, no tracking</li>
+            <li className="text-mist-700 dark:text-mist-400">We never contact anyone for you</li>
+          </FooterCategory>
+        </>
+      }
+      fineprint="Lead Radar researches public sources. Every lead links to its original source so you can check it."
+    />
   )
 }

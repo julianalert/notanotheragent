@@ -1,6 +1,7 @@
 'use client'
 
 import { Container } from '@/components/elements/container'
+import { Eyebrow } from '@/components/elements/eyebrow'
 import { Subheading } from '@/components/elements/subheading'
 import { Text } from '@/components/elements/text'
 import type { LeadView, RadarView } from '@/lib/radars'
@@ -8,7 +9,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { WebsiteForm } from '../../website-form'
 import { ResearchProgress, stageFor } from './progress'
 import { Results } from './results'
-import { Panel } from './ui'
+import { Framed } from './ui'
 
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 60000
@@ -155,6 +156,7 @@ export function RadarClient({ token, initialView }: { token: string; initialView
     content = (
       <ResearchProgress
         run={holdReady && run ? { ...run, status: 'completed' } : run}
+        websiteHost={view.websiteHost}
         slow={slow}
         privateUrl={privateUrl}
         onRetry={retry}
@@ -166,6 +168,7 @@ export function RadarClient({ token, initialView }: { token: string; initialView
   } else if (run.outcome === 'website_unreadable' || (run.outcome === 'validation_failed' && !view.profileServices.length)) {
     content = (
       <DeadEnd
+        host={view.websiteHost}
         title="We couldn’t read enough of this website to find relevant leads. Try a services-page URL."
         body={`We tried ${view.websiteHost} but couldn’t confirm a concrete service from its pages. Enter the page that describes what you sell.`}
       />
@@ -173,6 +176,7 @@ export function RadarClient({ token, initialView }: { token: string; initialView
   } else if (run.outcome === 'unsupported_business') {
     content = (
       <DeadEnd
+        host={view.websiteHost}
         title="This website isn’t a good fit for lead research"
         body={
           run.limitations[0] ||
@@ -185,25 +189,30 @@ export function RadarClient({ token, initialView }: { token: string; initialView
   }
 
   return (
-    <section className="py-10 sm:py-16">
-      <Container>
-        <div role="status" aria-live="polite" className="sr-only">
-          {announcement}
-        </div>
-        {content}
-      </Container>
-    </section>
+    <>
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
+      {content}
+    </>
   )
 }
 
-function DeadEnd({ title, body }: { title: string; body: string }) {
+function DeadEnd({ host, title, body }: { host: string; title: string; body: string }) {
   return (
-    <div className="flex max-w-3xl flex-col gap-6">
-      <Subheading>{title}</Subheading>
-      <Text className="text-pretty">{body}</Text>
-      <Panel className="[&_form]:mt-0 [&_form]:max-w-none">
-        <WebsiteForm />
-      </Panel>
-    </div>
+    <section className="py-16">
+      <Container className="flex flex-col gap-10">
+        <div className="flex max-w-3xl flex-col gap-6">
+          <div className="flex flex-col gap-2">
+            <Eyebrow>Private radar · {host}</Eyebrow>
+            <Subheading>{title}</Subheading>
+          </div>
+          <Text className="text-pretty">{body}</Text>
+        </div>
+        <Framed color="brown" className="max-w-3xl" surfaceClassName="p-6 sm:p-8">
+          <WebsiteForm />
+        </Framed>
+      </Container>
+    </section>
   )
 }

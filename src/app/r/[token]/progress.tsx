@@ -1,6 +1,8 @@
 'use client'
 
 import { Button } from '@/components/elements/button'
+import { Container } from '@/components/elements/container'
+import { Eyebrow } from '@/components/elements/eyebrow'
 import { Subheading } from '@/components/elements/subheading'
 import { Text } from '@/components/elements/text'
 import { AlertTriangleIcon } from '@/components/icons/alert-triangle-icon'
@@ -8,7 +10,7 @@ import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import type { RunView } from '@/lib/radars'
 import { clsx } from 'clsx/lite'
 import { PrivateLinkBox } from './status-panel'
-import { Spinner } from './ui'
+import { Framed, Spinner } from './ui'
 
 const STEPS = [
   { label: 'Website received', detail: 'Your research job is saved. You can close this tab.' },
@@ -42,6 +44,7 @@ export function stageFor(run: RunView | null): { active: number; percent: number
 
 export function ResearchProgress({
   run,
+  websiteHost,
   slow,
   privateUrl,
   onRetry,
@@ -50,6 +53,7 @@ export function ResearchProgress({
   expired,
 }: {
   run: RunView | null
+  websiteHost: string
   slow: boolean
   privateUrl: string
   onRetry: () => void
@@ -66,135 +70,141 @@ export function ResearchProgress({
   else if (slow && active < 3) helper = 'Still researching. You can return to this link when it’s ready.'
 
   return (
-    <div className="flex flex-col gap-10">
-      <div className="flex max-w-2xl flex-col gap-4">
-        <Subheading>Finding opportunities for your business</Subheading>
-        <Text className="text-pretty">
-          We’re reading your website and researching public signals that match what you sell. This can take a few
-          minutes.
-        </Text>
-      </div>
-
-      <div className="grid grid-cols-1 gap-8 *:min-w-0 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
-        <div className="flex flex-col gap-8">
+    <section className="py-16">
+      <Container className="flex flex-col gap-10 sm:gap-16">
+        <div className="flex max-w-2xl flex-col gap-6">
           <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-sm/7">
-              <span className="font-medium text-mist-950 dark:text-white">Research progress</span>
-              <span className="text-mist-600 tabular-nums dark:text-mist-400">{percent}%</span>
-            </div>
-            <div
-              role="progressbar"
-              aria-label="Research progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={percent}
-              aria-valuetext={`${percent}% · ${failed ? 'Research stopped' : activeStep.label}`}
-              className="h-2 overflow-hidden rounded-full bg-mist-950/10 dark:bg-white/10"
-            >
-              <div
-                className={clsx(
-                  'h-full rounded-full motion-safe:transition-[width] motion-safe:duration-700',
-                  failed ? 'bg-red-600 dark:bg-red-400' : 'bg-mist-950 dark:bg-white',
-                )}
-                style={{ width: `${percent}%` }}
-              />
-            </div>
+            <Eyebrow>Private radar · {websiteHost}</Eyebrow>
+            <Subheading>Finding opportunities for your business</Subheading>
           </div>
-
-          <ol className="flex flex-col">
-            {STEPS.map((step, index) => {
-              const done = index < active || (index === active && active === STEPS.length - 1 && !failed)
-              const current = index === active && !done
-              const errored = failed && index === active
-              return (
-                <li key={step.label} className="relative flex gap-4 pb-6 last:pb-0">
-                  {index < STEPS.length - 1 && (
-                    <span
-                      aria-hidden="true"
-                      className={clsx(
-                        'absolute top-8 bottom-0 left-3.5 w-px',
-                        done ? 'bg-mist-950 dark:bg-white' : 'bg-mist-950/15 dark:bg-white/15',
-                      )}
-                    />
-                  )}
-                  <span
-                    className={clsx(
-                      'relative flex size-7 shrink-0 items-center justify-center rounded-full',
-                      done && 'bg-mist-950 text-white dark:bg-white dark:text-mist-950',
-                      current && !errored && 'bg-white text-mist-950 inset-ring-1 inset-ring-mist-950/20 dark:bg-mist-900 dark:text-white dark:inset-ring-white/20',
-                      errored && 'bg-red-50 text-red-700 inset-ring-1 inset-ring-red-600/30 dark:bg-red-950 dark:text-red-300',
-                      !done && !current && 'bg-mist-950/5 inset-ring-1 inset-ring-mist-950/10 dark:bg-white/5 dark:inset-ring-white/10',
-                    )}
-                  >
-                    {done && <CheckmarkIcon className="stroke-2" />}
-                    {current && !errored && <Spinner />}
-                    {errored && <AlertTriangleIcon />}
-                    <span className="sr-only">{done ? 'Completed: ' : current ? (errored ? 'Failed: ' : 'In progress: ') : 'Pending: '}</span>
-                  </span>
-                  <div className="flex min-w-0 flex-col pt-0.5">
-                    <span
-                      className={clsx(
-                        'text-sm/6 font-medium',
-                        done || current ? 'text-mist-950 dark:text-white' : 'text-mist-500 dark:text-mist-500',
-                      )}
-                    >
-                      {step.label}
-                    </span>
-                    {current && !errored && (
-                      <span className="mt-1 text-sm/6 text-pretty text-mist-700 dark:text-mist-400">{helper}</span>
-                    )}
-                    {errored && (
-                      <div className="mt-2 flex flex-col items-start gap-3">
-                        <span className="text-sm/6 text-pretty text-mist-700 dark:text-mist-400">
-                          {expired
-                            ? 'This search couldn’t be completed, and the free research period has ended.'
-                            : run?.errorCode === 'configuration'
-                              ? 'Research is temporarily unavailable on our side. We’ve recorded the problem.'
-                              : run?.canRetry
-                                ? 'We couldn’t complete the research this time. Nothing was lost.'
-                                : 'We couldn’t complete the research for this website.'}
-                        </span>
-                        {run?.canRetry && (
-                          <Button onClick={onRetry} disabled={retrying} className="disabled:opacity-70">
-                            {retrying ? 'Retrying…' : 'Retry research'}
-                          </Button>
-                        )}
-                        {retryError && (
-                          <span role="alert" className="text-sm/6 text-red-700 dark:text-red-400">
-                            {retryError}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </li>
-              )
-            })}
-          </ol>
+          <Text className="text-pretty">
+            We’re reading your website and researching public signals that match what you sell. This can take a few
+            minutes.
+          </Text>
         </div>
 
-        <PrivateLinkBox privateUrl={privateUrl} headline="Save this private link to return to your results" />
-      </div>
+        <Framed color={failed ? 'brown' : 'blue'} className="rounded-lg sm:p-12" surfaceClassName="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          <div className="flex min-w-0 flex-col gap-8 p-6 sm:p-10">
+            <div className="flex flex-col gap-3">
+              <div className="flex items-baseline justify-between gap-4">
+                <span className="text-sm/7 font-medium text-mist-950 dark:text-white">Research progress</span>
+                <span className="font-display text-3xl/10 tracking-tight text-mist-950 tabular-nums dark:text-white">
+                  {percent}%
+                </span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label="Research progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={percent}
+                aria-valuetext={`${percent}% · ${failed ? 'Research stopped' : activeStep.label}`}
+                className="h-1.5 overflow-hidden rounded-full bg-mist-950/10 dark:bg-white/10"
+              >
+                <div
+                  className={clsx(
+                    'h-full rounded-full motion-safe:transition-[width] motion-safe:duration-700',
+                    failed ? 'bg-mist-500' : 'bg-mist-950 dark:bg-white',
+                  )}
+                  style={{ width: `${percent}%` }}
+                />
+              </div>
+            </div>
 
-      <div aria-hidden="true" className="flex flex-col gap-2">
-        {[0, 1, 2].map((index) => (
-          <SkeletonCard key={index} />
-        ))}
-      </div>
-    </div>
-  )
-}
+            <ol className="flex flex-col">
+              {STEPS.map((step, index) => {
+                const done = index < active
+                const current = index === active
+                const errored = failed && current
+                return (
+                  <li key={step.label} className="relative flex gap-4 pb-7 last:pb-0">
+                    {index < STEPS.length - 1 && (
+                      <span
+                        aria-hidden="true"
+                        className={clsx(
+                          'absolute top-8 bottom-1 left-3.5 w-px',
+                          done ? 'bg-mist-950 dark:bg-white' : 'bg-mist-950/10 dark:bg-white/10',
+                        )}
+                      />
+                    )}
+                    <span
+                      className={clsx(
+                        'relative flex size-7 shrink-0 items-center justify-center rounded-full',
+                        done && 'bg-mist-950 text-white dark:bg-white dark:text-mist-950',
+                        current &&
+                          !errored &&
+                          'bg-white text-mist-950 inset-ring-1 inset-ring-mist-950/15 dark:bg-mist-900 dark:text-white dark:inset-ring-white/20',
+                        errored && 'bg-mist-950/10 text-mist-950 dark:bg-white/10 dark:text-white',
+                        !done && !current && 'inset-ring-1 inset-ring-mist-950/10 dark:inset-ring-white/10',
+                      )}
+                    >
+                      {done && <CheckmarkIcon className="stroke-2" />}
+                      {current && !errored && <Spinner />}
+                      {errored && <AlertTriangleIcon />}
+                      <span className="sr-only">
+                        {done ? 'Completed: ' : errored ? 'Failed: ' : current ? 'In progress: ' : 'Pending: '}
+                      </span>
+                    </span>
+                    <div className="flex min-w-0 flex-col pt-0.5">
+                      <span
+                        className={clsx(
+                          'text-sm/6 font-medium',
+                          done || current ? 'text-mist-950 dark:text-white' : 'text-mist-500',
+                        )}
+                      >
+                        {step.label}
+                      </span>
+                      {current && !errored && (
+                        <span className="mt-1 text-sm/6 text-pretty text-mist-700 dark:text-mist-400">{helper}</span>
+                      )}
+                      {errored && (
+                        <div className="mt-2 flex flex-col items-start gap-3">
+                          <span className="text-sm/6 text-pretty text-mist-700 dark:text-mist-400">
+                            {expired
+                              ? 'This search couldn’t be completed, and the free research period has ended.'
+                              : run?.errorCode === 'configuration'
+                                ? 'Research is temporarily unavailable on our side. We’ve recorded the problem.'
+                                : run?.canRetry
+                                  ? 'We couldn’t complete the research this time. Nothing was lost.'
+                                  : 'We couldn’t complete the research for this website.'}
+                          </span>
+                          {run?.canRetry && (
+                            <Button onClick={onRetry} disabled={retrying} className="disabled:opacity-70">
+                              {retrying ? 'Retrying…' : 'Retry research'}
+                            </Button>
+                          )}
+                          {retryError && (
+                            <span role="alert" className="text-sm/6 text-mist-950 dark:text-white">
+                              {retryError}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
 
-function SkeletonCard() {
-  return (
-    <div className="flex flex-col gap-4 rounded-xl bg-mist-950/2.5 p-6 dark:bg-white/5">
-      <div className="flex gap-2">
-        <div className="h-6 w-28 rounded-full bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
-        <div className="h-6 w-20 rounded-full bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
-      </div>
-      <div className="h-7 w-3/4 rounded-md bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
-      <div className="h-4 w-1/3 rounded-md bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
-      <div className="h-16 w-full rounded-md bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
-    </div>
+          <div className="border-t border-mist-950/5 p-6 sm:p-10 lg:border-t-0 lg:border-l dark:border-white/10">
+            <PrivateLinkBox privateUrl={privateUrl} headline="Save this private link to return to your results" bare />
+          </div>
+        </Framed>
+
+        <div aria-hidden="true" className="grid grid-cols-1 gap-2 lg:grid-cols-3">
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="rounded-lg bg-mist-950/2.5 p-2 dark:bg-white/5">
+              <div className="h-40 rounded-sm bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
+              <div className="flex flex-col gap-3 p-6">
+                <div className="h-4 w-2/3 rounded-full bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
+                <div className="h-3 w-full rounded-full bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
+                <div className="h-3 w-5/6 rounded-full bg-mist-950/5 motion-safe:animate-pulse dark:bg-white/5" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Container>
+    </section>
   )
 }

@@ -1,7 +1,6 @@
-import { Main } from '@/components/elements/main'
 import type { Metadata } from 'next'
 import { Instrument_Serif, Inter } from 'next/font/google'
-import { SiteFooter, SiteHeader } from './site-chrome'
+import { SiteFooter } from './site-chrome'
 import './globals.css'
 
 // Self-hosted at build time: private pages make no third-party font requests.
@@ -21,12 +20,12 @@ export const metadata: Metadata = {
   referrer: 'no-referrer',
 }
 
+// Each page renders its own navbar (links and actions differ); the footer is shared.
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${inter.variable} ${instrumentSerif.variable}`}>
       <body className="flex min-h-dvh flex-col font-sans">
-        <SiteHeader />
-        <Main className="flex-1">{children}</Main>
+        <div className="flex-1">{children}</div>
         <SiteFooter />
       </body>
     </html>
