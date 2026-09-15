@@ -38,6 +38,7 @@ import {
 } from './provider'
 import { discover, type Connector, type DiscoverResult, type SearchHit } from './search'
 import { exaConfigured, exaContents } from './search/exa'
+import { readWithOpenAI } from './search/openai-search'
 
 /*
  * Discovery pipeline provider. The application searches (connectors), triages, reads and only then asks the
@@ -142,6 +143,8 @@ export function memoryPipelineStore(): PipelineStore & { states: Map<string, Pip
 const DAY_MS = 86_400_000
 const MAX_STEP_ATTEMPTS = 3
 const TRIAGE_BATCH = 40
+/** Pages read through hosted browsing per run (each is a small model call). */
+const MAX_BROWSER_READS = 8
 
 function log(event: string, details: Record<string, unknown>) {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...details }))
@@ -458,20 +461,39 @@ async function stepRead(state: PipelineState) {
       }
     }),
   )
-  // Sites that block servers (Reddit, X, LinkedIn...): Exa's cached or live-crawled text.
-  if (unreadable.length && exaConfigured()) {
-    const contents = await exaContents(unreadable.map((source) => source.url))
+  // Sites that block servers (LinkedIn, Facebook...): Exa's cached or live-crawled text.
+  const stillUnreadable = (source: PipelineSource) => !source.text
+  if (unreadable.some(stillUnreadable) && exaConfigured()) {
+    const batch = unreadable.filter(stillUnreadable).filter((source) => !/reddit\.com/i.test(source.url))
+    const contents = await exaContents(batch.map((source) => source.url))
     addUsage(state, { extra_cost_usd: contents.costUsd })
-    for (const source of unreadable) {
+    for (const source of batch) {
       const content = contents.results.find((result) => result.url === source.url)
       if (!content || !content.text) continue
       source.text = content.text
       source.title = source.title || content.title
       source.publishedDate = source.publishedDate ?? content.publishedDate
       source.fetched = true
-      state.accessFailures = state.accessFailures.filter((failure) => !failure.startsWith(source.url))
     }
   }
+  // Reddit (and anything Exa could not crawl): OpenAI's hosted browsing reads the page, a few at a time.
+  const forBrowser = unreadable.filter(stillUnreadable).slice(0, MAX_BROWSER_READS)
+  if (forBrowser.length && process.env.OPENAI_API_KEY) {
+    let cursor = 0
+    await Promise.all(
+      Array.from({ length: Math.min(4, forBrowser.length) }, async () => {
+        while (cursor < forBrowser.length) {
+          const source = forBrowser[cursor++]
+          const read = await readWithOpenAI(source.url, SOURCE_PAGE_CHARS)
+          addUsage(state, { input_tokens: read.usage.input_tokens, output_tokens: read.usage.output_tokens, web_search_calls: 1 })
+          if (!read.text) continue
+          source.text = read.text
+          source.fetched = true
+        }
+      }),
+    )
+  }
+  state.accessFailures = state.accessFailures.filter((failure) => !unreadable.some((source) => source.text && failure.startsWith(source.url)))
   const readable = state.sources.filter((source) => source.text.length >= 100)
   state.auditUrls.push(...readable.map((source) => source.url))
   state.actions.push(...readable.map((source) => ({ type: 'open_page', query: null, url: source.url, status: 'completed' })))

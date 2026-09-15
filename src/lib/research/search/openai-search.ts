@@ -5,8 +5,9 @@ import { communityOf } from './exa'
 import { isoDayOf, type ConnectorResult, type SearchRequest } from './types'
 
 /*
- * Fallback connector: one small hosted web_search call per topic. Used when Exa is not configured. Returns the
- * pages the search consulted; the read step fetches their text.
+ * Hosted web_search through a small model: one call per topic. Two uses: the general fallback when Exa is not
+ * configured, and the Reddit pass, because Reddit's API is closed and Exa does not index Reddit at all, while
+ * OpenAI's hosted browsing can still search and open Reddit pages. The same tool reads pages the app cannot fetch.
  */
 
 const INSTRUCTIONS = `Run web searches to find recent public posts, questions or requests written by the people described in the
@@ -16,10 +17,23 @@ surface posts. Never return articles, guides, blog posts, vendor or agency websi
 pages. Run at most 3 searches. Reply with one line per relevant post: "URL | YYYY-MM-DD or unknown | one-line
 summary". Nothing else.`
 
+const REDDIT_INSTRUCTIONS = `Find recent Reddit posts (reddit.com) written by the people described in the query: original first-person
+posts or questions in subreddits where they talk. Include the word reddit in every search, and try 2 or 3
+wordings. Return only reddit.com post URLs (the post's own /comments/ page, never a subreddit listing, user
+profile or search page). Never return articles or vendor pages. Run at most 3 searches. Reply with one line per
+relevant post: "URL | YYYY-MM-DD or unknown | one-line summary". Nothing else.`
+
+const READ_INSTRUCTIONS = `Open exactly the given URL with the web tool and return its content as plain text, as completely as the tool
+shows it: title, author or handle, the posting date or relative time shown, the full body, and the visible
+comments with each commenter's handle and, when shown, the comment permalink. Do not summarise, judge or add
+anything. If the page cannot be opened, reply with exactly: UNAVAILABLE.`
+
 let client: OpenAI | null = null
 const openai = () => (client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 0, timeout: 60_000 }))
 
-export async function searchOpenAI(request: SearchRequest): Promise<ConnectorResult & { usage: { input_tokens: number; output_tokens: number } }> {
+export type OpenAISearchUsage = { input_tokens: number; output_tokens: number }
+
+export async function searchOpenAI(request: SearchRequest, options: { focus?: 'reddit' } = {}): Promise<ConnectorResult & { usage: OpenAISearchUsage }> {
   const empty = { connector: 'openai' as const, hits: [], costUsd: 0, usage: { input_tokens: 0, output_tokens: 0 } }
   if (!process.env.OPENAI_API_KEY) return { ...empty, error: 'OPENAI_API_KEY is not set' }
   try {
@@ -32,7 +46,7 @@ export async function searchOpenAI(request: SearchRequest): Promise<ConnectorRes
         tool_choice: 'auto',
         ...({ max_tool_calls: 4 } as object),
         include: ['web_search_call.action.sources'],
-        instructions: INSTRUCTIONS,
+        instructions: options.focus === 'reddit' ? REDDIT_INSTRUCTIONS : INSTRUCTIONS,
         input: `Query: ${request.query}. Published on or after ${request.windowStart}. Up to ${request.limit} results.${domainNote}`,
         max_output_tokens: 2000,
       },
@@ -48,6 +62,7 @@ export async function searchOpenAI(request: SearchRequest): Promise<ConnectorRes
     const seen = new Set<string>()
     const hits = audit.urls
       .filter((url) => !seen.has(url) && seen.add(url))
+      .filter((url) => options.focus !== 'reddit' || /reddit\.com\/r\/[^/]+\/comments\//i.test(url))
       .slice(0, request.limit * 2)
       .map((url) => {
         const line = lines.get(url)
@@ -70,5 +85,49 @@ export async function searchOpenAI(request: SearchRequest): Promise<ConnectorRes
     }
   } catch (error) {
     return { ...empty, error: (error as Error).message.slice(0, 120) }
+  }
+}
+
+export type OpenAIRead = { url: string; text: string; usage: OpenAISearchUsage; error: string | null }
+
+/** Read a page the application cannot fetch itself (Reddit) through the hosted browsing tool. */
+export async function readWithOpenAI(url: string, maxChars: number): Promise<OpenAIRead> {
+  const usage = { input_tokens: 0, output_tokens: 0 }
+  if (!process.env.OPENAI_API_KEY) return { url, text: '', usage, error: 'OPENAI_API_KEY is not set' }
+  try {
+    const response = await openai().responses.create(
+      {
+        model: SEARCH_MODEL,
+        reasoning: { effort: 'low' },
+        tools: [{ type: 'web_search', external_web_access: true }],
+        tool_choice: 'required',
+        ...({ max_tool_calls: 3 } as object),
+        include: ['web_search_call.action.sources'],
+        instructions: READ_INSTRUCTIONS,
+        input: url,
+        max_output_tokens: 4000,
+      },
+      { timeout: 75_000 },
+    )
+    usage.input_tokens = response.usage?.input_tokens ?? 0
+    usage.output_tokens = response.usage?.output_tokens ?? 0
+    const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+    const opened = audit.actions.some((action) => action.type === 'open_page' && action.url && sameHostAndPath(action.url, url))
+    const text = audit.text.trim()
+    if (!opened || !text || /^UNAVAILABLE\b/.test(text)) return { url, text: '', usage, error: opened ? 'page unavailable' : 'page not opened by the tool' }
+    return { url, text: text.slice(0, maxChars), usage, error: null }
+  } catch (error) {
+    return { url, text: '', usage, error: (error as Error).message.slice(0, 120) }
+  }
+}
+
+function sameHostAndPath(a: string, b: string) {
+  try {
+    const x = new URL(a)
+    const y = new URL(b)
+    const norm = (u: URL) => `${u.hostname.replace(/^(www|old|new)\./, '')}${u.pathname.replace(/\/+$/, '').replace(/\.json$/, '')}`
+    return norm(x) === norm(y)
+  } catch {
+    return false
   }
 }

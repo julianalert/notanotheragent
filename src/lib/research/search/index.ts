@@ -35,14 +35,27 @@ export type DiscoverResult = {
 const DAY_MS = 86_400_000
 
 /**
- * Reddit closed its API to all but approved partners (May 2026) and answers servers with 403, so Reddit posts come
- * through Exa: a general search plus one restricted to reddit.com per topic. The Reddit connector itself only runs
- * with partner credentials.
+ * Communities Exa indexes where buyers post in the first person. Exa has no Reddit or X content at all, and Reddit's
+ * own API is closed to non-partners, so Reddit is searched through OpenAI's hosted browsing (the 'openai' connector
+ * with a Reddit focus). The Reddit connector itself only runs with partner credentials.
  */
+export const COMMUNITY_DOMAINS = [
+  'linkedin.com/posts',
+  'facebook.com/groups',
+  'indiehackers.com',
+  'threads.net',
+  'quora.com',
+  'news.ycombinator.com',
+  'community.hubspot.com',
+  'forum.webflow.com',
+  'growthhackers.com',
+  'warriorforum.com',
+]
+
 export function defaultConnectors(): Connector[] {
   const list: Connector[] = ['hn']
   if (exaConfigured()) list.unshift('exa')
-  else if (process.env.OPENAI_API_KEY) list.unshift('openai')
+  if (process.env.OPENAI_API_KEY) list.push('openai')
   if (redditConfigured()) list.push('reddit')
   return list
 }
@@ -72,13 +85,14 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
     const results = await Promise.all(
       connectors.map(async (connector): Promise<ConnectorResult> => {
         if (connector === 'exa') {
-          // The open web and Reddit as two searches: Reddit posts otherwise drown under articles.
-          const [web, reddit] = await Promise.all([searchExa(request), searchExa(request, { includeDomains: ['reddit.com'] })])
-          return { connector: 'exa', hits: [...reddit.hits, ...web.hits], costUsd: web.costUsd + reddit.costUsd, error: web.error && reddit.error ? web.error : null }
+          // The open web and the communities as two searches: first-person posts otherwise drown under articles.
+          const [web, communities] = await Promise.all([searchExa(request), searchExa(request, { includeDomains: COMMUNITY_DOMAINS })])
+          return { connector: 'exa', hits: roundRobin([communities.hits, web.hits]), costUsd: web.costUsd + communities.costUsd, error: web.error && communities.error ? web.error : null }
         }
         if (connector === 'hn') return searchHackerNews(request)
         if (connector === 'openai') {
-          const result = await searchOpenAI(request)
+          // With Exa doing the open web, this pass is Reddit only; without Exa it is the general fallback.
+          const result = await searchOpenAI(request, exaConfigured() ? { focus: 'reddit' } : {})
           usage.input_tokens += result.usage.input_tokens
           usage.output_tokens += result.usage.output_tokens
           return result
@@ -86,27 +100,31 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
         return searchReddit(request)
       }),
     )
-    const hits: SearchHit[] = []
     for (const result of results) {
       record(result)
       searches.push({ connector: result.connector, query: topic.query, hits: result.hits.length, error: result.error })
-      hits.push(...result.hits)
     }
-    perTopic.set(topic.query, hits)
+    // Every connector gets an equal say in a topic's list, so one source (LinkedIn, Reddit) cannot crowd out the rest.
+    perTopic.set(topic.query, roundRobin(results.map((result) => result.hits)))
   }
 
-  await parallel(topics, options.concurrency ?? 4, runTopic)
+  await parallel(topics, options.concurrency ?? 6, runTopic)
 
   for (const subreddit of options.subreddits ?? []) {
     const name = subreddit.replace(/^r\//, '')
-    // Watched subreddits: Reddit's listing with partner credentials, otherwise Exa restricted to the subreddit's path.
+    // Watched subreddits: Reddit's listing with partner credentials, otherwise hosted browsing restricted to the subreddit.
     const result = redditConfigured()
       ? await subredditNew(name, RESULTS_PER_SEARCH * 2)
-      : exaConfigured()
-        ? await searchExa(
-            { query: topics[0]?.query ?? 'new posts asking for help or recommendations', domains: [], windowStart: options.windowStart, limit: RESULTS_PER_SEARCH * 2 },
-            { includeDomains: [`reddit.com/r/${name}`] },
-          )
+      : process.env.OPENAI_API_KEY
+        ? await (async () => {
+            const polled = await searchOpenAI(
+              { query: topics[0]?.query ?? 'asking for help or recommendations', domains: [`reddit.com/r/${name}`], windowStart: options.windowStart, limit: RESULTS_PER_SEARCH },
+              { focus: 'reddit' },
+            )
+            usage.input_tokens += polled.usage.input_tokens
+            usage.output_tokens += polled.usage.output_tokens
+            return polled
+          })()
         : { connector: 'reddit' as const, hits: [], costUsd: 0, error: 'no Reddit access configured' }
     record(result)
     searches.push({ connector: result.connector, query: `r/${name}/new`, hits: result.hits.length, error: result.error })
@@ -133,6 +151,14 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
 
   const unavailable = [...failures.entries()].filter(([, stats]) => stats.calls > 0 && stats.errors === stats.calls).map(([connector]) => connector)
   return { hits: merged, searches, costUsd, usage, unavailable }
+}
+
+/** First of each list, then second of each, and so on. */
+export function roundRobin<T>(lists: T[][]): T[] {
+  const result: T[] = []
+  const longest = Math.max(0, ...lists.map((list) => list.length))
+  for (let i = 0; i < longest; i++) for (const list of lists) if (i < list.length) result.push(list[i])
+  return result
 }
 
 async function parallel<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
