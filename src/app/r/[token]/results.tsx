@@ -170,7 +170,6 @@ export function Results({ view, privateUrl, actions }: { view: RadarView; privat
       lead={lead}
       now={view.now}
       timezone={view.timezone}
-      outputLanguage={view.outputLanguage}
       onStatus={(status) => actions.setLeadStatus(lead.id, status)}
     />
   )

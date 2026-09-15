@@ -65,13 +65,11 @@ export function LeadCard({
   lead,
   now,
   timezone,
-  outputLanguage,
   onStatus,
 }: {
   lead: LeadView
   now: string
   timezone: string
-  outputLanguage?: string
   onStatus: (status: LeadView['status']) => void
 }) {
   const d = lead.data
@@ -81,7 +79,7 @@ export function LeadCard({
   const dismissed = lead.status === 'dismissed'
   const contacted = lead.status === 'contacted'
   const quote = d.need_evidence_ids.map((id) => ev.find((item) => item.id === id)).find((item) => item?.excerpt.trim())
-  const showLanguage = d.outreach_language && !outputLanguage?.toLowerCase().startsWith(d.outreach_language.toLowerCase())
+  const showLanguage = Boolean(d.outreach_language) && !d.outreach_language.toLowerCase().startsWith('en')
 
   return (
     <article

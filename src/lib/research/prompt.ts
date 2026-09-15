@@ -22,6 +22,14 @@ export type ResearchInput = {
   run_instructions: string
 }
 
+/**
+ * The results are read by the business owner, whose language is best evidenced by their own website, not by
+ * the visitor's browser preferences (a French browser setting must not turn an English business's profile French).
+ * Outreach still follows the lead's language per the system prompt.
+ */
+export const WEBSITE_LANGUAGE =
+  'the primary language of the content at website_url (write the profile, fit explanations and coverage notes in it)'
+
 export const INITIAL_WINDOW_DAYS = 30
 export const DAILY_OVERLAP_HOURS = 72
 const DAY_MS = 86_400_000
@@ -196,7 +204,6 @@ export function buildResearchInput(args: {
   mode: 'initial' | 'daily'
   now: Date
   websiteUrl: string
-  outputLanguage: string
   lastSuccessfulRunAt: Date | null
   profile: BusinessProfileT | null
   excluded: ExcludedOpportunity[]
@@ -207,7 +214,7 @@ export function buildResearchInput(args: {
     mode: args.mode,
     now_utc: args.now.toISOString(),
     website_url: args.websiteUrl,
-    output_language: args.outputLanguage || 'en',
+    output_language: WEBSITE_LANGUAGE,
     published_on_or_after: publishedOnOrAfter(args.now, initial ? null : args.lastSuccessfulRunAt),
     last_successful_run_at: initial ? null : (args.lastSuccessfulRunAt?.toISOString() ?? null),
     target_count: TARGET_COUNT,

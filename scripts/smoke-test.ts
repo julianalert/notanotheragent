@@ -28,7 +28,6 @@ async function main() {
     mode: 'initial',
     now,
     websiteUrl: website.url,
-    outputLanguage: 'en',
     lastSuccessfulRunAt: null,
     profile: null,
     excluded: [],

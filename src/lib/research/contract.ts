@@ -2,7 +2,8 @@ import { z } from 'zod'
 
 /** Fixed baseline. Change only after rerunning the evaluation (spec §2). Never silently fall back. */
 export const RESEARCH_MODEL = 'gpt-5.5-2026-04-23'
-export const PROMPT_VERSION = 'research-v1'
+// v1.1: output_language follows the business website instead of the visitor's browser.
+export const PROMPT_VERSION = 'research-v1.1'
 export const SCHEMA_NAME = 'lead_research_v1'
 export const SCHEMA_VERSION = '1'
 export const MAX_OUTPUT_TOKENS = 24000

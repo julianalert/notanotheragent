@@ -11,7 +11,7 @@ import {
   type GateContext,
   type PriorOpportunity,
 } from './gates'
-import { publishedOnOrAfter } from './prompt'
+import { buildResearchInput, publishedOnOrAfter, WEBSITE_LANGUAGE } from './prompt'
 
 /*
  * Qualification fixtures (spec §1.8 and §2.2). All data is fictional. Semantic cases (expansion news, vendor
@@ -372,5 +372,21 @@ describe('regressions from production runs', () => {
     ).toBe(true)
     expect(sameService('Automatisation des devis et base de prix', 'Référencement SEO et création de contenu')).toBe(false)
     expect(sameService('Website design', 'Conversion rate optimisation')).toBe(false)
+  })
+})
+
+describe('research input language', () => {
+  it('follows the business website, never the visitor browser language', () => {
+    const input = buildResearchInput({
+      mode: 'initial',
+      now: NOW,
+      websiteUrl: 'https://cyberleads.com',
+      lastSuccessfulRunAt: null,
+      profile: null,
+      excluded: [],
+      focus: null,
+    })
+    expect(input.output_language).toBe(WEBSITE_LANGUAGE)
+    expect(input.output_language).not.toMatch(/fr|en-US/)
   })
 })

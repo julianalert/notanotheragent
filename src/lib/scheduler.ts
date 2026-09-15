@@ -163,7 +163,6 @@ async function startRun(run: RunRow) {
     mode: run.kind,
     now,
     websiteUrl: radar.website,
-    outputLanguage: radar.output_language,
     lastSuccessfulRunAt: lastSuccess,
     profile: radar.profile,
     focus: radar.focus,
