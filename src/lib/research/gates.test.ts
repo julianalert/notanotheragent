@@ -19,7 +19,7 @@ import {
   type GateContext,
   type PriorOpportunity,
 } from './gates'
-import { buildResearchInput, lintQuery, publishedOnOrAfter, SYSTEM_PROMPT, WEBSITE_LANGUAGE } from './prompt'
+import { buildResearchInput, deriveTopics, focusInstructions, lintQuery, publishedOnOrAfter, QUALIFY_PROMPT, sanitizeQuery, SYSTEM_PROMPT, TRIAGE_PROMPT, WEBSITE_LANGUAGE } from './prompt'
 
 /*
  * Qualification fixtures. All data is fictional. Semantic judgements (is this author our buyer? is this a seller?)
@@ -495,9 +495,9 @@ describe('helpers', () => {
     expect(input.previous_candidates).toHaveLength(1)
   })
 
-  it('accepts the v2 structured result shape', () => {
+  it('accepts the v3 structured result shape', () => {
     const parsed = ResearchResult.safeParse({
-      schema_version: '2',
+      schema_version: '3',
       research_status: 'complete',
       profile,
       search_plan: { angles: [], proposed_queries: [] },
@@ -548,10 +548,120 @@ describe('email delivery helpers', () => {
       leads: [{ id: 'l1', data: lead }],
       privateUrl: 'https://app.example/r/token',
       unsubscribeUrl: 'https://app.example/api/unsubscribe/code',
-      daysLeft: 10,
+      plan: 'free',
     })
+    expect(email.html).toContain('Activate my agent')
     expect(email.subject).toBe('1 new lead for example.com')
     expect(email.html).not.toContain('<script>')
     expect(email.html).toContain('&lt;script&gt;')
+  })
+})
+
+describe('research-v3 pipeline rules', () => {
+  it('sanitizeQuery enforces the search rules the prompt states', () => {
+    expect(sanitizeQuery('site:reddit.com/r/agencynewbies "getting clients" "Published: last week" September 2026 posted')).toEqual({
+      query: '"getting clients" Published: last week',
+      domains: ['reddit.com/r/agencynewbies'],
+    })
+    expect(sanitizeQuery('agency owner struggling to get clients')).toEqual({ query: 'agency owner struggling to get clients', domains: [] })
+    expect(lintQuery(sanitizeQuery('"a" "b" "c" site:x.com mars 2025').query)).toEqual([])
+  })
+
+  it('deriveTopics mixes requests, problems and triggers, rotates by seed and puts untried angles first', () => {
+    const brief = {
+      ...profile.acquisition_brief,
+      explicit_requests: ['how do you find clients', 'recommend a lead source for my agency', 'need help getting agency clients'],
+      buyer_problems_in_their_words: ['referrals dried up', 'cold outreach gets no replies', 'prospecting takes all my time'],
+      trigger_situations: ['lost our biggest client', 'hiring a business developer for our studio'],
+    }
+    const day1 = deriveTopics({ brief, mode: 'follow_up', seed: 1, untriedAngles: ['agency founders asking for lead sources'] })
+    expect(day1[0]).toEqual({ query: 'agency founders asking for lead sources', angle: 'untried', domains: [] })
+    expect(day1).toHaveLength(8)
+    expect(new Set(day1.map((topic) => topic.angle))).toEqual(new Set(['untried', 'request', 'problem', 'trigger']))
+    const day2 = deriveTopics({ brief, mode: 'watch', seed: 2 })
+    expect(day2).toHaveLength(6)
+    expect(day2[0].query).not.toBe(deriveTopics({ brief, mode: 'watch', seed: 1 })[0].query)
+    // Duplicates and empty strings are dropped.
+    expect(deriveTopics({ brief: { ...brief, explicit_requests: ['referrals dried up', ''] }, mode: 'initial', seed: 0 }).map((t) => t.query)).not.toContain('')
+  })
+
+  it('a trigger signal matched through a documented problem solved is published', () => {
+    const withProblems: BusinessProfileT = {
+      ...profile,
+      problems_solved: [{ value: 'Time-consuming manual prospecting and lead qualification for agencies', basis: 'stated', evidence_ids: ['p1'] }],
+    }
+    const hiring = makeCandidate({
+      headline: 'Studio hiring a business development assistant to prospect and qualify leads',
+      intent: 'trigger_event',
+      company_name: 'Northwind Studio',
+      public_handle: null,
+      matched_service: 'Manual prospecting and lead qualification for agencies',
+      evidence: [
+        {
+          id: 'e1',
+          url: 'https://forum.example.org/threads/hiring-1',
+          title: 'Northwind Studio hiring: business development assistant',
+          inspected_original: true,
+          excerpt: 'Northwind Studio is hiring someone to prospect and qualify new leads',
+          paraphrase: 'The studio is hiring for prospecting and lead qualification.',
+        },
+      ],
+      source_url: 'https://forum.example.org/threads/hiring-1',
+      contact_route: { url: 'https://forum.example.org/threads/hiring-1', kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['e1'] },
+    })
+    const outcome = decisionOf([hiring], { profile: withProblems })
+    expect(outcome.decision).toBe('published')
+    expect(outcome.candidate.intent).toBe('trigger_event')
+    // Without a documented problem, the job title alone only partly matches a service: not published.
+    expect(decisionOf([makeCandidate({ ...hiring, intent: 'trigger_event' })]).decision).toBe('unresolved')
+  })
+
+  it('the qualification prompt forbids new sources and asks for the profile to be left to the application', () => {
+    expect(QUALIFY_PROMPT).toMatch(/cannot search or open pages/)
+    expect(QUALIFY_PROMPT).toMatch(/Set profile to null/)
+    expect(QUALIFY_PROMPT).toMatch(/trigger_event/)
+  })
+})
+
+describe('memory and feedback', () => {
+  const brief = {
+    ...profile.acquisition_brief,
+    explicit_requests: ['how do you find clients', 'recommend a lead source for my agency'],
+    buyer_problems_in_their_words: ['referrals dried up', 'cold outreach gets no replies', 'prospecting takes all my time'],
+    trigger_situations: ['lost our biggest client'],
+  }
+
+  it('proven topics run first, capped to the exploit share, and dead topics are skipped', () => {
+    const topics = deriveTopics({
+      brief,
+      mode: 'watch',
+      seed: 0,
+      priorityTopics: ['agency owners asking where to find clients', 'referrals dried up', 'studio pipeline empty', 'freelancers no clients', 'x'],
+      deadTopics: ['cold outreach gets no replies'],
+    })
+    expect(topics).toHaveLength(6)
+    expect(topics.slice(0, 4).map((topic) => topic.angle)).toEqual(['proven', 'proven', 'proven', 'proven'])
+    expect(topics.map((topic) => topic.query)).not.toContain('cold outreach gets no replies')
+    // A proven topic that is also in the brief appears once.
+    expect(topics.filter((topic) => topic.query === 'referrals dried up')).toHaveLength(1)
+  })
+
+  it('focus guidance reaches the run instructions and feedback reaches every prompt', () => {
+    const text = focusInstructions({ services: [], market: null, wanted: 'founders of B2B SaaS', avoid: 'students' })
+    expect(text).toMatch(/founders of B2B SaaS/)
+    expect(text).toMatch(/does not want: "students"/)
+    const input = buildResearchInput({
+      mode: 'daily',
+      now: NOW,
+      websiteUrl: WEBSITE,
+      lastSuccessfulRunAt: NOW,
+      profile,
+      excluded: [],
+      focus: { services: [], market: null, wanted: 'founders', avoid: null },
+      feedback: { liked: [{ headline: 'a', need_summary: 'b', buyer_match: 'c' }], rejected: [] },
+    })
+    expect(input.feedback.liked).toHaveLength(1)
+    expect(input.run_instructions).toMatch(/founders/)
+    for (const prompt of [SYSTEM_PROMPT, TRIAGE_PROMPT, QUALIFY_PROMPT]) expect(prompt).toMatch(/feedback\.liked/)
   })
 })

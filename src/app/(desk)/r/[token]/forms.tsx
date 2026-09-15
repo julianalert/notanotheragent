@@ -115,7 +115,7 @@ export function DeskEmailForm({ token, onSaved }: { token: string; onSaved: () =
         </p>
       ) : (
         <p id={`${id}-hint`} className="form-hint">
-          We’ll email your best matches every morning for 14 days. Unsubscribe anytime.
+          We’ll email your first leads as soon as they’re ready. Unsubscribe anytime.
         </p>
       )}
     </form>

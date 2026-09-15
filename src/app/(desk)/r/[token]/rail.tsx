@@ -7,32 +7,41 @@ import { longDay, relativeMoment } from './lib'
 
 export type DeskView = 'today' | 'contacted' | 'dismissed'
 
-const RESEARCH_DAYS = 14
-
 export function Rail({
   view,
   privateUrl,
   currentView,
   counts,
   viewsEnabled,
+  activating,
   onView,
   onCopyLink,
   onTimezoneChange,
+  onActivate,
+  onPortal,
+  onToggleSource,
+  onWebhook,
 }: {
   view: RadarView
   privateUrl: string
   currentView: DeskView
   counts: Record<DeskView, number>
   viewsEnabled: boolean
+  activating: boolean
   onView: (view: DeskView) => void
   onCopyLink: () => void
   onTimezoneChange: (timezone: string) => Promise<void>
+  onActivate: () => void
+  onPortal: () => void
+  onToggleSource: (id: string, enabled: boolean) => Promise<void>
+  onWebhook: (url: string) => Promise<string | null>
 }) {
   const [editingTz, setEditingTz] = useState(false)
+  const [editingHook, setEditingHook] = useState(false)
+  const [hookError, setHookError] = useState<string | null>(null)
   const zones = useMemo(() => (editingTz ? Intl.supportedValuesOf('timeZone') : []), [editingTz])
-  const msLeft = Date.parse(view.researchEndsAt) - Date.parse(view.now)
-  const daysLeft = Math.max(0, Math.ceil(msLeft / 86_400_000))
-  const remaining = Math.min(1, Math.max(0, msLeft / (RESEARCH_DAYS * 86_400_000)))
+  const firstSearchDone = view.initialRun?.status === 'completed' && Boolean(view.profileServices.length)
+  const canActivate = view.billingConfigured && firstSearchDone && view.plan !== 'active'
 
   const nav: Array<{ id: DeskView; label: string }> = [
     { id: 'today', label: 'Today' },
@@ -63,42 +72,56 @@ export function Rail({
         <Link href="/#start">New search</Link>
       </nav>
 
-      <div className="rail-card">
-        {view.expired ? (
-          <>
-            <span className="live is-ended">
-              <i aria-hidden="true" />
-              Research complete
-            </span>
-            <p className="days">
-              Done
-              <small>Your leads stay here</small>
-            </p>
-          </>
-        ) : (
+      <div className="rail-card" id="activate">
+        {view.agentLive ? (
           <>
             <span className="live">
               <i aria-hidden="true" />
-              Research active
+              {view.plan === 'past_due' ? 'Agent live · payment failed' : 'Agent live'}
             </span>
             <p className="days">
-              {daysLeft}
+              {view.watchedSources.filter((source) => source.enabled).length || '—'}
               <small>
-                {daysLeft === 1 ? 'day' : 'days'} left, until {longDay(view.researchEndsAt, view.timezone)}
+                {view.watchedSources.length ? 'sources watched through the day' : 'sources: learning where your buyers post'}
+                {view.currentPeriodEnd && <>, renews {longDay(view.currentPeriodEnd, view.timezone)}</>}
               </small>
             </p>
-            <div className="track" aria-hidden="true">
-              <i style={{ width: `${remaining * 100}%` }} />
-            </div>
+            {view.plan === 'past_due' && <p className="rail-warn">Your last payment failed. Update your card to keep the agent running.</p>}
+            <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
+              {view.plan === 'past_due' ? 'Update card' : 'Manage billing'}
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="live is-ended">
+              <i aria-hidden="true" />
+              {view.plan === 'cancelled' || view.plan === 'past_due' ? 'Agent stopped' : 'Agent asleep'}
+            </span>
+            <p className="days">
+              ${view.priceUsd}
+              <small>per month. Searches every morning, watches your buyers’ communities through the day, learns from what you contact.</small>
+            </p>
+            {canActivate ? (
+              <button type="button" className="btn btn--brand btn--sm" onClick={onActivate} disabled={activating}>
+                {activating ? 'Opening checkout…' : view.plan === 'free' ? 'Activate my agent' : 'Reactivate my agent'}
+              </button>
+            ) : (
+              <p className="rail-muted">{firstSearchDone ? 'Activation is not available yet.' : 'Available once your first search is done.'}</p>
+            )}
+            {view.plan !== 'free' && view.billingConfigured && (
+              <button type="button" className="link" onClick={onPortal} style={{ marginTop: 8 }}>
+                Billing history
+              </button>
+            )}
           </>
         )}
       </div>
 
       <div className="rail-facts">
-        {!view.expired && view.nextRunAt && (
+        {view.agentLive && view.nextRunAt && (
           <div>
             <b>{capitalise(relativeMoment(view.nextRunAt, view.now, view.timezone))}</b>
-            Next search — {view.timezone},{' '}
+            Next morning search — {view.timezone},{' '}
             <button type="button" className="link" onClick={() => setEditingTz((value) => !value)}>
               {editingTz ? 'cancel' : 'change'}
             </button>
@@ -126,12 +149,60 @@ export function Rail({
             )}
           </div>
         )}
+        {view.agentLive && view.watchedSources.length > 0 && (
+          <div>
+            <b>Watched sources</b>
+            <ul className="rail-sources">
+              {view.watchedSources.map((source) => (
+                <li key={source.id}>
+                  <label>
+                    <input type="checkbox" checked={source.enabled} onChange={(event) => onToggleSource(source.id, event.target.checked)} />
+                    <span>{source.label}</span>
+                    <em>{source.published ? `${source.published} lead${source.published === 1 ? '' : 's'}` : `${source.hits} seen`}</em>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {view.emailMasked && (
           <div>
             <b>{view.emailMasked}</b>
             {view.emailUnsubscribed ? 'Email updates are off' : 'Where new leads are emailed'}
           </div>
         )}
+        <div>
+          <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
+          {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
+          <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
+            {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
+          </button>
+          {editingHook && (
+            <form
+              className="rail-form"
+              onSubmit={async (event) => {
+                event.preventDefault()
+                const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
+                const problem = await onWebhook(url)
+                setHookError(problem)
+                if (!problem) setEditingHook(false)
+              }}
+            >
+              <label htmlFor="desk-webhook" className="sr-only">
+                Webhook URL
+              </label>
+              <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
+              <button type="submit" className="btn btn--line btn--sm">
+                Save
+              </button>
+              {hookError && (
+                <p role="alert" className="form-error">
+                  {hookError}
+                </p>
+              )}
+            </form>
+          )}
+        </div>
         <div>
           <b>Public sources only</b>
           We never contact anyone for you

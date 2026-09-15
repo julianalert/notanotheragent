@@ -148,7 +148,7 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
   return {
     auditUrls,
     result: {
-      schema_version: '2',
+      schema_version: '3',
       research_status: 'complete',
       profile: {
         name: `${website.hostname.replace(/^www\./, '')} (sample profile)`,

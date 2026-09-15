@@ -20,18 +20,23 @@ const SOFT = '#f2f3f3'
 const LINE = '#e3e6e7'
 
 export type RunEmailInput = {
-  kind: 'initial' | 'daily'
+  /** initial: first results. daily: the morning digest. instant: a strong explicit request found by a watch run. */
+  kind: 'initial' | 'daily' | 'instant'
   outcome: RunOutcome
   websiteHost: string
   businessName: string | null
   leads: Array<{ id: string; data: LeadT }>
   privateUrl: string
   unsubscribeUrl: string
-  daysLeft: number
+  plan: 'free' | 'active' | 'past_due' | 'cancelled'
 }
 
 function subjectFor(input: RunEmailInput) {
   const count = input.leads.length
+  if (input.kind === 'instant') {
+    const headline = input.leads[0]?.data.headline ?? 'a new request'
+    return `Someone just asked for what ${input.websiteHost} sells: ${headline.length > 70 ? `${headline.slice(0, 67).trimEnd()}…` : headline}`
+  }
   if (input.kind === 'daily') return `${count} new ${count === 1 ? 'lead' : 'leads'} for ${input.websiteHost}`
   if (count > 0) return `Your first ${count} ${count === 1 ? 'lead is' : 'leads are'} ready for ${input.websiteHost}`
   if (input.outcome === 'website_unreadable' || input.outcome === 'unsupported_business') {
@@ -43,6 +48,9 @@ function subjectFor(input: RunEmailInput) {
 function introFor(input: RunEmailInput) {
   const count = input.leads.length
   if (count > 0) {
+    if (input.kind === 'instant') {
+      return `Your agent was watching and just found ${count === 1 ? 'a public request' : `${count} public requests`} that match what you sell. Early replies get answered.`
+    }
     return input.kind === 'daily'
       ? `This morning’s search found ${count} new ${count === 1 ? 'opportunity' : 'opportunities'} that match what you sell.`
       : `We read your website and found ${count} ${count === 1 ? 'opportunity' : 'opportunities'} with public evidence that they need what you sell.`
@@ -60,7 +68,7 @@ function leadHtml(lead: { id: string; data: LeadT }, privateUrl: string) {
   const d = lead.data
   const who = d.person_name ?? d.public_handle ?? d.company_name ?? 'Author not publicly identified'
   const quote = d.need_evidence_ids.map((id) => d.evidence.find((item) => item.id === id)).find((item) => item?.excerpt.trim())
-  const label = d.intent === 'explicit_request' ? 'Explicit request' : 'Stated problem'
+  const label = d.intent === 'explicit_request' ? 'Explicit request' : d.intent === 'trigger_event' ? 'Trigger signal' : 'Stated problem'
   return `
   <tr><td style="padding:0 0 12px">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SOFT};border-radius:12px">
@@ -80,6 +88,16 @@ export function renderRunEmail(input: RunEmailInput) {
   const intro = introFor(input)
   const name = input.businessName ?? input.websiteHost
   const cta = input.leads.length ? 'Open all leads' : 'Open your private page'
+  const live = input.plan === 'active' || input.plan === 'past_due'
+  const footer =
+    input.plan === 'past_due'
+      ? `Your last payment for ${name} failed. Update your card on your private page to keep the agent searching.`
+      : live
+        ? `Your agent searches for ${name} every morning and watches its sources through the day. Contact or dismiss leads: it learns from both.`
+        : input.plan === 'cancelled'
+          ? `Your agent for ${name} is stopped. Your leads stay on your private page; reactivate it there whenever you want new ones.`
+          : `This was your free first search for ${name}. Activate your agent to search every morning, watch your sources through the day and learn from what you contact.`
+  const activateUrl = `${input.privateUrl}#activate`
 
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head>
@@ -101,7 +119,8 @@ export function renderRunEmail(input: RunEmailInput) {
         <tr><td style="padding:12px 32px 32px">
           <a href="${escapeHtml(input.privateUrl)}" style="display:inline-block;padding:10px 20px;border-radius:999px;background:#f97316;background-image:linear-gradient(90deg,#f97316,#f43f5e);font:600 14px/20px Inter,Arial,sans-serif;color:#ffffff;text-decoration:none">${escapeHtml(cta)}</a>
           <p style="margin:24px 0 0;font:400 13px/20px Inter,Arial,sans-serif;color:${MUTED}">
-            ${input.daysLeft > 0 ? `We’ll keep searching for ${escapeHtml(name)} every morning for ${input.daysLeft} more ${input.daysLeft === 1 ? 'day' : 'days'}.` : 'Your free research period has ended. Your leads stay on your private page.'}
+            ${escapeHtml(footer)}
+            ${!live && input.plan !== 'cancelled' ? ` <a href="${escapeHtml(activateUrl)}" style="color:${INK};font-weight:600">Activate my agent →</a>` : ''}
             Keep this email private: its link opens your results.
           </p>
         </td></tr>
@@ -126,6 +145,8 @@ export function renderRunEmail(input: RunEmailInput) {
     '',
     `${cta}: ${input.privateUrl}`,
     '',
+    footer,
+    ...(!live && input.plan !== 'cancelled' ? [`Activate my agent: ${activateUrl}`] : []),
     'Keep this email private: its link opens your results.',
     `Unsubscribe: ${input.unsubscribeUrl}`,
   ].join('\n')

@@ -479,9 +479,11 @@ export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys
     unresolved.push('no usable public contact route')
   }
 
-  // Documented service (and focus).
+  // Documented service or documented problem solved (and focus). A trigger signal such as hiring for the role the
+  // offer replaces is matched through the problem the offer solves, never through the job title.
   const profileServices = ctx.profile.services.map((service) => service.value)
-  const serviceFit = serviceMatch(profileServices, candidate.matched_service)
+  const documented = [...profileServices, ...ctx.profile.problems_solved.map((problem) => problem.value)]
+  const serviceFit = serviceMatch(documented, candidate.matched_service)
   if (serviceFit === 'unrelated') rejected.push('need is not addressed by a documented service')
   else if (serviceFit === 'unclear') unresolved.push('matched service only partly matches the documented services')
   else if (ctx.focus?.services.length && !matchesServices(ctx.focus.services, candidate.matched_service)) {
@@ -629,7 +631,7 @@ function toLead(check: Check): LeadT {
 export function followUpDecision(args: {
   /** AUTOMATIC_FOLLOW_UPS */
   enabled: boolean
-  kind: 'initial' | 'daily' | 'follow_up'
+  kind: 'initial' | 'daily' | 'follow_up' | 'watch'
   researchStatus: string
   published: number
   unresolved: number

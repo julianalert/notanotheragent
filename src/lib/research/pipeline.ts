@@ -1,0 +1,630 @@
+import { APIConnectionError, APIError } from 'openai'
+import { zodTextFormat } from 'openai/helpers/zod'
+import {
+  BriefResult,
+  MAX_OUTPUT_TOKENS,
+  MAX_SOURCES_TO_READ,
+  MIN_TRIAGE_SCORE,
+  PIPELINE_DEADLINE_MINUTES,
+  RESEARCH_MODEL,
+  RESEARCH_REASONING_EFFORT,
+  ResearchResult,
+  SCHEMA_NAME,
+  SEARCH_MODEL,
+  SOURCE_PAGE_CHARS,
+  TriageResult,
+  WEBSITE_PAGES,
+  WEBSITE_PAGE_CHARS,
+  type BusinessProfileT,
+  type ResearchResultT,
+} from './contract'
+import { sourceKey } from './gates'
+import { fetchPage, readWebsite } from './pages'
+import { BRIEF_PROMPT, deriveTopics, QUALIFY_PROMPT, TRIAGE_PROMPT, type ResearchInput, type SearchTopic } from './prompt'
+import {
+  auditFromOutput,
+  classifyCreateError,
+  isRetryable,
+  openai,
+  repairFormat,
+  ResearchError,
+  usageOf,
+  type ErrorCode,
+  type Inspection,
+  type OutputItem,
+  type ResearchProvider,
+  type ToolAction,
+  type Usage,
+} from './provider'
+import { discover, type Connector, type DiscoverResult, type SearchHit } from './search'
+import { exaConfigured, exaContents } from './search/exa'
+
+/*
+ * Discovery pipeline provider. The application searches (connectors), triages, reads and only then asks the
+ * research model to qualify from full text, with no tools. One step advances per scheduler tick, so every
+ * step stays well inside a serverless invocation and can be retried on its own. The audit the gates check is
+ * exactly the set of pages the application read.
+ */
+
+export type PipelineStep = 'brief' | 'search' | 'triage' | 'read' | 'qualify' | 'qualify_poll' | 'done' | 'failed'
+
+export type PipelineSource = {
+  id: string
+  url: string
+  title: string
+  connector: Connector
+  topic: string
+  community: string | null
+  publishedDate: string | null
+  text: string
+  /** Text came from the application's own fetch (true) or from the connector's content (false). */
+  fetched: boolean
+  triage: number
+  reason: string
+}
+
+export type PipelineState = {
+  version: 1
+  step: PipelineStep
+  attempts: Partial<Record<PipelineStep, number>>
+  startedAt: string
+  input: ResearchInput
+  /** Connectors for this run (watch runs restrict them). */
+  connectors: Connector[] | null
+  subreddits: string[]
+  excludeKeys: string[]
+  priorityTopics: string[]
+  deadTopics: string[]
+  profile: BusinessProfileT | null
+  websitePages: string[]
+  plannedQueries: string[]
+  topics: SearchTopic[]
+  hits: SearchHit[]
+  searches: DiscoverResult['searches']
+  unavailable: Connector[]
+  triage: Array<{ id: string; url: string; score: number; reason: string }>
+  sources: PipelineSource[]
+  accessFailures: string[]
+  usage: Usage
+  qualifyResponseId: string | null
+  resultText: string | null
+  auditUrls: string[]
+  actions: ToolAction[]
+  error: { code: ErrorCode; message: string } | null
+}
+
+export interface PipelineStore {
+  create(state: PipelineState): Promise<string>
+  load(id: string): Promise<PipelineState | null>
+  save(id: string, state: PipelineState): Promise<void>
+}
+
+/** Postgres-backed store (pipeline_runs). The database module is loaded lazily so scripts can use the memory store. */
+export const dbPipelineStore: PipelineStore = {
+  async create(state) {
+    const { query } = await import('../db')
+    const [row] = await query<{ id: string }>(`insert into pipeline_runs (state) values ($1) returning id`, [JSON.stringify(state)])
+    return row.id
+  },
+  async load(id) {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null
+    const { query } = await import('../db')
+    const [row] = await query<{ state: PipelineState }>(`select state from pipeline_runs where id = $1`, [id])
+    return row?.state ?? null
+  },
+  async save(id, state) {
+    const { query } = await import('../db')
+    await query(`update pipeline_runs set state = $2, updated_at = now() where id = $1`, [id, JSON.stringify(state)])
+  },
+}
+
+/** In-process store for the evaluation script and tests. */
+export function memoryPipelineStore(): PipelineStore & { states: Map<string, PipelineState> } {
+  const states = new Map<string, PipelineState>()
+  let counter = 0
+  return {
+    states,
+    async create(state) {
+      const id = `mem_${++counter}`
+      states.set(id, structuredClone(state))
+      return id
+    },
+    async load(id) {
+      const state = states.get(id)
+      return state ? structuredClone(state) : null
+    },
+    async save(id, state) {
+      states.set(id, structuredClone(state))
+    },
+  }
+}
+
+const DAY_MS = 86_400_000
+const MAX_STEP_ATTEMPTS = 3
+const TRIAGE_BATCH = 40
+
+function log(event: string, details: Record<string, unknown>) {
+  console.log(JSON.stringify({ at: new Date().toISOString(), event, ...details }))
+}
+
+const addUsage = (state: PipelineState, usage: Partial<Usage>) => {
+  state.usage.input_tokens += usage.input_tokens ?? 0
+  state.usage.output_tokens += usage.output_tokens ?? 0
+  state.usage.reasoning_tokens += usage.reasoning_tokens ?? 0
+  state.usage.web_search_calls += usage.web_search_calls ?? 0
+  state.usage.extra_cost_usd = (state.usage.extra_cost_usd ?? 0) + (usage.extra_cost_usd ?? 0)
+}
+
+/** Errors inside a step: model transport problems and 429/5xx retry the step; everything else fails the run. */
+function classifyStepError(error: unknown): ResearchError {
+  if (error instanceof ResearchError) return error
+  if (error instanceof APIConnectionError) return new ResearchError('provider_transient', `Provider connection: ${error.message}`)
+  if (error instanceof APIError) return classifyCreateError(error)
+  return new ResearchError('provider_failed', (error as Error)?.message ?? 'Unknown pipeline error')
+}
+
+export function createPipelineProvider(store: PipelineStore): ResearchProvider {
+  return {
+    name: 'pipeline',
+    model: RESEARCH_MODEL,
+    outputMode: 'structured',
+    deadlineMs: PIPELINE_DEADLINE_MINUTES * 60_000,
+
+    async start(input, context = {}) {
+      if (!process.env.OPENAI_API_KEY) throw new ResearchError('configuration', 'OPENAI_API_KEY is required for the research pipeline')
+      const state: PipelineState = {
+        version: 1,
+        step: 'brief',
+        attempts: {},
+        startedAt: new Date().toISOString(),
+        input,
+        connectors: context.connectors ?? null,
+        subreddits: context.subreddits ?? [],
+        excludeKeys: context.excludeKeys ?? [],
+        priorityTopics: context.priorityTopics ?? [],
+        deadTopics: context.deadTopics ?? [],
+        profile: null,
+        websitePages: [],
+        plannedQueries: [],
+        topics: [],
+        hits: [],
+        searches: [],
+        unavailable: [],
+        triage: [],
+        sources: [],
+        accessFailures: [],
+        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 0, extra_cost_usd: 0 },
+        qualifyResponseId: null,
+        resultText: null,
+        auditUrls: [],
+        actions: [],
+        error: null,
+      }
+      const id = await store.create(state)
+      return { responseId: id }
+    },
+
+    async inspect(id): Promise<Inspection> {
+      const state = await store.load(id)
+      if (!state) return { state: 'failed', code: 'provider_failed', message: 'Pipeline state not found' }
+      if (state.step === 'done') return completed(state)
+      if (state.step === 'failed') return { state: 'failed', code: state.error?.code ?? 'provider_failed', message: state.error?.message ?? 'Pipeline failed', usage: state.usage, raw: summary(state) }
+
+      const step = state.step
+      try {
+        const advanced = await STEPS[step](state)
+        // A step that did not advance (background qualification still running) keeps the run pending.
+        if (advanced) log('pipeline.step', { step, next: state.step, sources: state.sources.length, hits: state.hits.length })
+      } catch (error) {
+        const failure = classifyStepError(error)
+        const attempts = (state.attempts[step] ?? 0) + 1
+        state.attempts[step] = attempts
+        if (isRetryable(failure.code) && attempts < MAX_STEP_ATTEMPTS) {
+          log('pipeline.step_retry', { step, attempt: attempts, code: failure.code })
+          await store.save(id, state)
+          return { state: 'pending' }
+        }
+        state.step = 'failed'
+        state.error = { code: failure.code, message: failure.message.slice(0, 1000) }
+        log('pipeline.failed', { step, code: failure.code })
+      }
+      await store.save(id, state)
+      const next = stepOf(state)
+      if (next === 'done') return completed(state)
+      if (next === 'failed') return { state: 'failed', code: state.error!.code, message: state.error!.message, usage: state.usage, raw: summary(state) }
+      return { state: 'pending' }
+    },
+
+    format: repairFormat,
+
+    async cancel(id) {
+      const state = await store.load(id)
+      if (!state || state.step === 'done' || state.step === 'failed') return
+      if (state.qualifyResponseId) await openai().responses.cancel(state.qualifyResponseId).catch(() => undefined)
+      state.step = 'failed'
+      state.error = { code: 'timed_out', message: 'Cancelled at the deadline' }
+      await store.save(id, state)
+    },
+  }
+}
+
+/* --------------------------------- Steps ---------------------------------- */
+
+type Step = (state: PipelineState) => Promise<boolean>
+
+const STEPS: Record<PipelineStep, Step> = {
+  brief: stepBrief,
+  search: stepSearch,
+  triage: stepTriage,
+  read: stepRead,
+  qualify: stepQualify,
+  qualify_poll: stepQualifyPoll,
+  done: async () => false,
+  failed: async () => false,
+}
+
+const briefFormat = () => zodTextFormat(BriefResult, 'business_brief_v3')
+const triageFormat = () => zodTextFormat(TriageResult, 'search_triage_v3')
+const resultFormat = () => zodTextFormat(ResearchResult, SCHEMA_NAME)
+
+async function stepBrief(state: PipelineState) {
+  const { input } = state
+  let profile = input.profile
+  let planned: string[] = []
+
+  if (!profile || !profile.acquisition_brief) {
+    const pages = await readWebsite(input.website_url, WEBSITE_PAGES, WEBSITE_PAGE_CHARS)
+    const readable = pages.filter((page) => page.ok)
+    state.websitePages = pages.flatMap((page) => [page.url, page.finalUrl])
+    state.auditUrls.push(...state.websitePages)
+    state.actions.push(...pages.map((page) => ({ type: 'open_page', query: null, url: page.url, status: page.ok ? 'completed' : 'failed' })))
+    if (!pages[0]?.ok || !readable.length) {
+      finish(state, emptyResult('website_unreadable', null, [`The website could not be read: ${pages[0]?.error ?? 'no readable text'}`]))
+      return true
+    }
+    const response = await openai().responses.create(
+      {
+        model: RESEARCH_MODEL,
+        reasoning: { effort: RESEARCH_REASONING_EFFORT },
+        tools: [],
+        max_output_tokens: 16000,
+        instructions: BRIEF_PROMPT,
+        input: JSON.stringify({
+          website_url: input.website_url,
+          now_utc: input.now_utc,
+          pages: readable.map((page) => ({ url: page.finalUrl, title: page.title, text: page.text })),
+        }),
+        text: { format: briefFormat() },
+      },
+      { timeout: 170_000 },
+    )
+    addUsage(state, usageOf(response))
+    const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+    if (audit.refusal) throw new ResearchError('refusal', audit.refusal)
+    if (response.status !== 'completed' || !audit.text.trim()) throw new ResearchError('incomplete', `Brief request ${response.status}`)
+    const parsed = BriefResult.safeParse(JSON.parse(audit.text))
+    if (!parsed.success) throw new ResearchError('invalid_output', `Brief does not match the schema: ${parsed.error.message.slice(0, 300)}`)
+    const brief = parsed.data
+    if (brief.research_status !== 'complete' || !brief.profile) {
+      finish(state, emptyResult(brief.research_status === 'unsupported_business' ? 'unsupported_business' : 'website_unreadable', brief.profile, []))
+      return true
+    }
+    // Profiles saved before research-v2 keep their website facts and gain the brief.
+    profile = profile ? { ...profile, acquisition_brief: brief.profile.acquisition_brief } : brief.profile
+    planned = brief.search_plan.proposed_queries
+  }
+
+  state.profile = profile
+  state.plannedQueries = planned
+  state.topics = deriveTopics({
+    brief: profile.acquisition_brief,
+    mode: input.mode,
+    seed: Math.floor(Date.parse(input.now_utc) / DAY_MS),
+    plannedQueries: planned,
+    untriedAngles: input.untried_angles,
+    priorityTopics: state.priorityTopics,
+    deadTopics: state.deadTopics,
+  })
+  state.step = 'search'
+  return true
+}
+
+async function stepSearch(state: PipelineState) {
+  const excludeKeys = new Set<string>(state.excludeKeys)
+  for (const item of state.input.excluded_opportunities) {
+    const key = sourceKey(item.source_url)
+    if (key) excludeKeys.add(key)
+  }
+  const result = await discover(state.topics, {
+    windowStart: state.input.published_on_or_after,
+    excludeKeys,
+    connectors: state.connectors ?? undefined,
+    subreddits: state.subreddits,
+  })
+  state.hits = result.hits
+  state.searches = result.searches
+  state.unavailable = result.unavailable
+  addUsage(state, { ...result.usage, web_search_calls: result.searches.length, extra_cost_usd: result.costUsd })
+  state.actions.push(
+    ...result.searches.map((search) => ({ type: 'search', query: `${search.connector}: ${search.query}`, url: null, status: search.error ? 'failed' : 'completed' })),
+  )
+  if (!state.hits.length) {
+    finish(state, emptyResult('complete', state.profile, [
+      'No search results inside the date window for the brief’s buyer situations.',
+      ...state.unavailable.map((connector) => `Search connector unavailable this run: ${connector}.`),
+    ]))
+    return true
+  }
+  state.step = 'triage'
+  return true
+}
+
+async function stepTriage(state: PipelineState) {
+  const brief = state.profile!.acquisition_brief
+  const hits = state.hits.map((hit, index) => ({ id: `H${index + 1}`, hit }))
+  const batches: Array<typeof hits> = []
+  for (let i = 0; i < hits.length; i += TRIAGE_BATCH) batches.push(hits.slice(i, i + TRIAGE_BATCH))
+
+  const scores = new Map<string, { score: number; reason: string }>()
+  await Promise.all(
+    batches.map(async (batch) => {
+      const response = await openai().responses.create(
+        {
+          model: SEARCH_MODEL,
+          reasoning: { effort: 'low' },
+          tools: [],
+          max_output_tokens: 8000,
+          instructions: TRIAGE_PROMPT,
+          input: JSON.stringify({
+            brief: {
+              sells: brief.sells,
+              buyers: brief.buyers,
+              recognise_buyer_in_posts: brief.recognise_buyer_in_posts,
+              buyer_problems_in_their_words: brief.buyer_problems_in_their_words,
+              trigger_situations: brief.trigger_situations,
+              not_our_buyer: brief.not_our_buyer,
+              buyer_seller_confusions: brief.buyer_seller_confusions,
+            },
+            focus_guidance: state.input.run_instructions.includes('USER FOCUS CORRECTION')
+              ? state.input.run_instructions.slice(state.input.run_instructions.indexOf('USER FOCUS CORRECTION'))
+              : null,
+            feedback: state.input.feedback,
+            hits: batch.map(({ id, hit }) => ({
+              id,
+              url: hit.url,
+              title: hit.title,
+              date: hit.publishedDate,
+              preview: (hit.text ?? hit.snippet).slice(0, 800),
+            })),
+          }),
+          text: { format: triageFormat() },
+        },
+        { timeout: 90_000 },
+      )
+      addUsage(state, usageOf(response))
+      const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+      if (response.status !== 'completed' || !audit.text.trim()) throw new ResearchError('incomplete', `Triage request ${response.status}`)
+      const parsed = TriageResult.safeParse(JSON.parse(audit.text))
+      if (!parsed.success) throw new ResearchError('invalid_output', `Triage does not match the schema: ${parsed.error.message.slice(0, 200)}`)
+      for (const item of parsed.data.scores) scores.set(item.id, { score: Math.max(0, Math.min(3, Math.round(item.score))), reason: item.reason })
+    }),
+  )
+
+  state.triage = hits.map(({ id, hit }) => ({ id, url: hit.url, score: scores.get(id)?.score ?? 0, reason: scores.get(id)?.reason ?? 'not scored' }))
+  const selected = hits
+    .map(({ id, hit }) => ({ id, hit, ...(scores.get(id) ?? { score: 0, reason: 'not scored' }) }))
+    .filter((item) => item.score >= MIN_TRIAGE_SCORE)
+    .sort((a, b) => b.score - a.score || (b.hit.publishedDate ?? '').localeCompare(a.hit.publishedDate ?? ''))
+    .slice(0, MAX_SOURCES_TO_READ[state.input.mode])
+
+  state.sources = selected.map((item, index) => ({
+    id: `S${index + 1}`,
+    url: item.hit.url,
+    title: item.hit.title,
+    connector: item.hit.connector,
+    topic: item.hit.topic,
+    community: item.hit.community,
+    publishedDate: item.hit.publishedDate,
+    text: item.hit.text ?? '',
+    fetched: false,
+    triage: item.score,
+    reason: item.reason,
+  }))
+  // Unselected hits no longer need their text; keep them small for diagnostics.
+  state.hits = state.hits.map((hit) => ({ ...hit, text: null }))
+  state.step = state.sources.length ? 'read' : 'qualify'
+  return true
+}
+
+async function stepRead(state: PipelineState) {
+  const queue = state.sources.filter((source) => !source.text || source.connector === 'openai')
+  const unreadable: PipelineSource[] = []
+  let next = 0
+  await Promise.all(
+    Array.from({ length: Math.min(5, queue.length) }, async () => {
+      while (next < queue.length) {
+        const source = queue[next++]
+        const page = await fetchPage(source.url, SOURCE_PAGE_CHARS)
+        if (page.ok) {
+          source.text = page.text
+          source.title = source.title || page.title
+          source.publishedDate = source.publishedDate ?? page.dateHints[0] ?? null
+          source.fetched = true
+          if (page.finalUrl !== source.url) state.auditUrls.push(page.finalUrl)
+        } else if (!source.text) {
+          unreadable.push(source)
+          state.accessFailures.push(`${source.url} (${page.error})`)
+        }
+      }
+    }),
+  )
+  // Sites that block servers (Reddit, X, LinkedIn...): Exa's cached or live-crawled text.
+  if (unreadable.length && exaConfigured()) {
+    const contents = await exaContents(unreadable.map((source) => source.url))
+    addUsage(state, { extra_cost_usd: contents.costUsd })
+    for (const source of unreadable) {
+      const content = contents.results.find((result) => result.url === source.url)
+      if (!content || !content.text) continue
+      source.text = content.text
+      source.title = source.title || content.title
+      source.publishedDate = source.publishedDate ?? content.publishedDate
+      source.fetched = true
+      state.accessFailures = state.accessFailures.filter((failure) => !failure.startsWith(source.url))
+    }
+  }
+  const readable = state.sources.filter((source) => source.text.length >= 100)
+  state.auditUrls.push(...readable.map((source) => source.url))
+  state.actions.push(...readable.map((source) => ({ type: 'open_page', query: null, url: source.url, status: 'completed' })))
+  state.sources = readable.map((source, index) => ({ ...source, id: `S${index + 1}` }))
+  state.step = 'qualify'
+  return true
+}
+
+async function stepQualify(state: PipelineState) {
+  if (!state.sources.length) {
+    finish(state, emptyResult('complete', state.profile, ['Search results were found but none could be read or looked like a buyer post.']))
+    return true
+  }
+  const { input } = state
+  try {
+    const response = await openai().responses.create({
+      model: RESEARCH_MODEL,
+      reasoning: { effort: RESEARCH_REASONING_EFFORT },
+      background: true,
+      store: true,
+      tools: [],
+      max_output_tokens: MAX_OUTPUT_TOKENS,
+      instructions: QUALIFY_PROMPT,
+      input: JSON.stringify({
+        mode: input.mode,
+        now_utc: input.now_utc,
+        published_on_or_after: input.published_on_or_after,
+        last_successful_run_at: input.last_successful_run_at,
+        target_count: input.target_count,
+        max_candidates: input.max_candidates,
+        output_language: input.output_language,
+        profile: state.profile,
+        excluded_opportunities: input.excluded_opportunities,
+        previous_candidates: input.previous_candidates,
+        previous_queries: input.previous_queries,
+        untried_angles: input.untried_angles,
+        feedback: input.feedback,
+        run_instructions: input.run_instructions,
+        sources: state.sources.map((source) => ({
+          id: source.id,
+          url: source.url,
+          title: source.title,
+          connector: source.connector,
+          community: source.community,
+          date_hint: source.publishedDate,
+          text: source.text,
+        })),
+      }),
+      text: { format: resultFormat() },
+    })
+    state.qualifyResponseId = response.id
+  } catch (error) {
+    throw classifyCreateError(error)
+  }
+  state.step = 'qualify_poll'
+  return true
+}
+
+async function stepQualifyPoll(state: PipelineState) {
+  const response = await openai().responses.retrieve(state.qualifyResponseId!)
+  if (response.status === 'queued' || response.status === 'in_progress') return false
+  addUsage(state, usageOf(response))
+  const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+  if (response.status === 'completed') {
+    if (audit.refusal) throw new ResearchError('refusal', audit.refusal)
+    if (!audit.text.trim()) throw new ResearchError('incomplete', 'Qualification completed without output text')
+    let parsed = ResearchResult.safeParse(safeJson(audit.text))
+    if (!parsed.success) {
+      log('pipeline.format_repair', { problem: parsed.error.message.slice(0, 200) })
+      const repaired = await repairFormat(audit.text)
+      addUsage(state, repaired.usage)
+      parsed = ResearchResult.safeParse(safeJson(repaired.text))
+      if (!parsed.success) throw new ResearchError('invalid_output', `Unparseable after formatting: ${parsed.error.message.slice(0, 300)}`)
+    }
+    const result: ResearchResultT = {
+      ...parsed.data,
+      profile: state.profile,
+      coverage: {
+        ...parsed.data.coverage,
+        access_failures: [...new Set([...parsed.data.coverage.access_failures, ...state.accessFailures])],
+        limitations: [
+          ...parsed.data.coverage.limitations,
+          ...state.unavailable.map((connector) => `Search connector unavailable this run: ${connector}.`),
+        ],
+      },
+    }
+    finish(state, result)
+    return true
+  }
+  if (response.status === 'incomplete') throw new ResearchError('incomplete', `Incomplete: ${response.incomplete_details?.reason ?? 'unknown'}`)
+  if (response.status === 'cancelled') throw new ResearchError('timed_out', 'Cancelled')
+  const code = response.error?.code ?? ''
+  throw new ResearchError(code === 'server_error' || code === 'rate_limit_exceeded' ? 'provider_transient' : 'provider_failed', response.error?.message ?? `Provider status ${response.status}`)
+}
+
+/* -------------------------------- Helpers --------------------------------- */
+
+function finish(state: PipelineState, result: ResearchResultT) {
+  state.resultText = JSON.stringify(result)
+  state.auditUrls = [...new Set(state.auditUrls)]
+  state.step = 'done'
+}
+
+function emptyResult(status: ResearchResultT['research_status'], profile: BusinessProfileT | null, limitations: string[]): ResearchResultT {
+  return {
+    schema_version: '3',
+    research_status: status,
+    profile,
+    search_plan: { angles: [], proposed_queries: [] },
+    candidates: [],
+    follow_up: { worthwhile: false, reason: 'No sources to qualify.', untried_angles: [], candidates_to_verify: [] },
+    coverage: { limitations, access_failures: [], rejection_summary: [] },
+  }
+}
+
+function completed(state: PipelineState): Inspection {
+  return {
+    state: 'completed',
+    text: state.resultText!,
+    auditUrls: state.auditUrls,
+    actions: state.actions,
+    usage: state.usage,
+    raw: summary(state),
+  }
+}
+
+export type PipelineSummary = ReturnType<typeof summary>['pipeline']
+
+/** Diagnostics stored on the run: never the source texts. */
+function summary(state: PipelineState) {
+  return {
+    pipeline: {
+      step: state.step,
+      attempts: state.attempts,
+      topics: state.topics,
+      searches: state.searches,
+      unavailable: state.unavailable,
+      hits: state.hits.length,
+      triage: state.triage,
+      sources: state.sources.map(({ text, ...rest }) => ({ ...rest, chars: text.length })),
+      access_failures: state.accessFailures,
+      error: state.error,
+    },
+  }
+}
+
+/** Read after a step ran; keeps TypeScript from narrowing the step away. */
+const stepOf = (state: PipelineState): PipelineStep => state.step
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}

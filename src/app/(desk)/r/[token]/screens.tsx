@@ -98,7 +98,7 @@ export function Searching({
                   <>
                     <p>
                       {expired
-                        ? 'This search couldn’t be completed, and the free research period has ended.'
+                        ? 'This search couldn’t be completed, and the time to retry it has passed.'
                         : run?.errorCode === 'configuration'
                           ? 'Research is temporarily unavailable on our side. We’ve recorded the problem.'
                           : run?.canRetry
@@ -167,7 +167,7 @@ const EMPTY_COPY: Record<string, { title: string; body: string }> = {
   },
 }
 
-export function NoResults({ view }: { view: RadarView }) {
+export function NoResults({ view, onActivate, activating }: { view: RadarView; onActivate: () => void; activating: boolean }) {
   const followUp = view.followUpRun
   const followUpRunning = followUp && ['queued', 'running', 'processing'].includes(followUp.status)
   const latest = followUp?.status === 'completed' ? followUp : view.initialRun
@@ -184,10 +184,21 @@ export function NoResults({ view }: { view: RadarView }) {
       ) : (
         <p>{copy.body}</p>
       )}
-      {!view.expired && !followUpRunning && (
+      {view.agentLive && !followUpRunning && (
         <p>
-          We run again every morning for the rest of your free period
-          {view.emailUnsubscribed ? ' and add anything that qualifies here.' : ' and email you as soon as something qualifies.'}
+          Your agent searches again every morning and watches your buyers’ communities through the day
+          {view.emailUnsubscribed ? ', adding anything that qualifies here.' : ', and emails you as soon as something qualifies.'}
+        </p>
+      )}
+      {!view.agentLive && !followUpRunning && view.profileServices.length > 0 && (
+        <p>
+          An empty first search is common: most buyer posts appear over weeks, not on one day. Activate your agent and it
+          searches every morning, watches the communities where your buyers post, and learns from what you contact.{' '}
+          {view.billingConfigured && (
+            <button type="button" className="btn btn--brand btn--sm" style={{ marginTop: 10, display: 'block' }} onClick={onActivate} disabled={activating}>
+              {activating ? 'Opening checkout…' : `Activate my agent · $${view.priceUsd}/month`}
+            </button>
+          )}
         </p>
       )}
       <p style={{ marginTop: 20 }}>
@@ -196,11 +207,7 @@ export function NoResults({ view }: { view: RadarView }) {
       <DeskWebsiteForm placeholder={`${view.websiteHost}/services`} />
       <p className="next">
         {view.lastResearchAt && <>Last searched {relativeMoment(view.lastResearchAt, view.now, view.timezone)}. </>}
-        {view.expired
-          ? 'Your free research period has ended.'
-          : view.nextRunAt
-            ? `Next search ${relativeMoment(view.nextRunAt, view.now, view.timezone)}, ${view.timezone}.`
-            : ''}
+        {view.agentLive && view.nextRunAt ? `Next search ${relativeMoment(view.nextRunAt, view.now, view.timezone)}, ${view.timezone}.` : ''}
       </p>
     </div>
   )
@@ -246,7 +253,7 @@ export function FocusEditor({
   onClose,
 }: {
   view: RadarView
-  onSave: (focus: { services: string[]; market: string } | null) => Promise<string | null>
+  onSave: (focus: { services: string[]; market: string; wanted: string; avoid: string } | null) => Promise<string | null>
   onClose: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -257,7 +264,12 @@ export function FocusEditor({
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     setSaving(true)
-    const problem = await onSave({ services: data.getAll('services').map(String), market: String(data.get('market') ?? '') })
+    const problem = await onSave({
+      services: data.getAll('services').map(String),
+      market: String(data.get('market') ?? ''),
+      wanted: String(data.get('wanted') ?? ''),
+      avoid: String(data.get('avoid') ?? ''),
+    })
     setSaving(false)
     if (problem) setError(problem)
     else onClose()
@@ -290,9 +302,37 @@ export function FocusEditor({
           placeholder="e.g. UK and Ireland"
         />
       </div>
+      <div>
+        <label className="title" htmlFor="desk-wanted">
+          Who you want <small style={{ fontWeight: 400, opacity: 0.7 }}>(optional)</small>
+        </label>
+        <input
+          id="desk-wanted"
+          name="wanted"
+          className="field"
+          style={{ display: 'block', width: '100%', marginTop: 8 }}
+          maxLength={300}
+          defaultValue={view.focusSelection?.wanted ?? ''}
+          placeholder="e.g. founders of B2B SaaS with 5–50 people, not freelancers"
+        />
+      </div>
+      <div>
+        <label className="title" htmlFor="desk-avoid">
+          Who to skip <small style={{ fontWeight: 400, opacity: 0.7 }}>(optional)</small>
+        </label>
+        <input
+          id="desk-avoid"
+          name="avoid"
+          className="field"
+          style={{ display: 'block', width: '100%', marginTop: 8 }}
+          maxLength={300}
+          defaultValue={view.focusSelection?.avoid ?? ''}
+          placeholder="e.g. students, agencies selling the same thing, e-commerce stores"
+        />
+      </div>
       <p className="form-hint" style={{ marginTop: 0 }}>
-        Only services found on your website can be searched. Changes apply to the next daily search; they don’t start a
-        new search or change your research period.
+        Only services found on your website can be searched. Guidance steers what the agent looks for and accepts; it
+        never adds services your website doesn’t document. Changes apply to the next search.
       </p>
       {error && (
         <p role="alert" className="form-error">

@@ -1,4 +1,5 @@
 import { safeOutgoingUrl } from '../url'
+import { redditConfigured, redditJson } from './search/reddit'
 
 /*
  * Page reading for the research pipeline. The application fetches pages itself so the expensive model reads each
@@ -104,13 +105,13 @@ export function htmlToText(html: string, maxChars: number) {
 type RedditThing = { kind: string; data: Record<string, unknown> }
 const redditDay = (utc: unknown) => (typeof utc === 'number' ? new Date(utc * 1000).toISOString().slice(0, 10) : null)
 
-/** Reddit serves JSON for any post or comment permalink; far cleaner than its HTML. */
+/** Reddit serves JSON for any post or comment permalink; far cleaner than its HTML. Returns the path with query. */
 export function redditJsonUrl(input: string) {
   try {
     const url = new URL(input)
     const host = url.hostname.toLowerCase()
     if (!/(^|\.)reddit\.com$/.test(host) || !/\/comments\/[a-z0-9]+/i.test(url.pathname)) return null
-    return `https://www.reddit.com${url.pathname.replace(/\/+$/, '').replace(/\.json$/i, '')}.json?limit=12&depth=2&raw_json=1`
+    return `${url.pathname.replace(/\/+$/, '').replace(/\.json$/i, '')}.json?limit=12&depth=2&raw_json=1`
   } catch {
     return null
   }
@@ -141,8 +142,9 @@ export async function fetchPage(url: string, maxChars: number): Promise<FetchedP
   try {
     const reddit = redditJsonUrl(url)
     if (reddit) {
-      const { body } = await fetchPublic(reddit, 'application/json')
-      const parsed = redditToText(JSON.parse(body), maxChars)
+      // Reddit answers servers with 403 unless partner credentials are configured; the pipeline uses Exa's text instead.
+      if (!redditConfigured()) return failed('reddit blocks server requests (no partner credentials)')
+      const parsed = redditToText(await redditJson<unknown>(reddit), maxChars)
       if (!parsed) return failed('reddit returned no post')
       return { url, finalUrl: url, ok: true, ...parsed, error: null }
     }

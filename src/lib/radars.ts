@@ -2,7 +2,8 @@ import 'server-only'
 import { config } from './config'
 import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
-import type { BusinessProfileT, Focus, LeadT, RunOutcome } from './research/contract'
+import { agentLive, type Plan } from './billing/subscription'
+import type { BusinessProfileT, DismissReason, Focus, LeadT, RunOutcome } from './research/contract'
 import { getProvider } from './research/provider'
 import { isValidTimeZone, nextDailyRunAt } from './time'
 import { hashToken, isWellFormedToken } from './tokens'
@@ -23,12 +24,35 @@ export type RadarRow = {
   email: string | null
   email_unsubscribed_at: Date | null
   token_ciphertext: string | null
+  plan: Plan
+  stripe_customer_id: string | null
+  stripe_subscription_id: string | null
+  activated_at: Date | null
+  current_period_end: Date | null
+  last_watch_at: Date | null
+  webhook_url: string | null
+}
+
+export type RunKind = 'initial' | 'daily' | 'follow_up' | 'watch'
+
+export type WatchedSourceRow = {
+  id: string
+  radar_id: string
+  kind: 'subreddit' | 'hn' | 'exa_query' | 'feed'
+  key: string
+  label: string
+  added_by: 'agent' | 'user'
+  enabled: boolean
+  last_polled_at: Date | null
+  last_item_at: Date | null
+  hits: number
+  published: number
 }
 
 export type RunRow = {
   id: string
   radar_id: string
-  kind: 'initial' | 'daily' | 'follow_up'
+  kind: RunKind
   run_key: string
   parent_run_id: string | null
   status: 'queued' | 'running' | 'processing' | 'completed' | 'failed' | 'cancelled'
@@ -56,11 +80,12 @@ type LeadRow = {
   score_total: number
   user_status: 'new' | 'contacted' | 'dismissed'
   user_status_at: Date | null
+  dismiss_reason: DismissReason | null
 }
 
 export type RunView = {
   id: string
-  kind: 'initial' | 'daily' | 'follow_up'
+  kind: RunKind
   status: RunRow['status']
   outcome: RunOutcome | null
   errorCode: string | null
@@ -83,6 +108,7 @@ export type LeadView = {
   discoveredAt: string
   status: LeadRow['user_status']
   statusAt: string | null
+  dismissReason: DismissReason | null
   data: LeadT
 }
 
@@ -112,6 +138,16 @@ export type RadarView = {
   hasEmail: boolean
   emailMasked: string | null
   emailUnsubscribed: boolean
+  webhookUrl: string | null
+  plan: Plan
+  /** Scheduled research (daily and watch runs) is happening for this radar. */
+  agentLive: boolean
+  currentPeriodEnd: string | null
+  priceUsd: number
+  billingConfigured: boolean
+  watchedSources: Array<{ id: string; kind: WatchedSourceRow['kind']; label: string; enabled: boolean; hits: number; published: number }>
+  /** The most recent watch run, when one is in progress or completed today. */
+  latestWatchRun: RunView | null
 }
 
 function safeEncrypt(token: string) {
@@ -207,7 +243,7 @@ const values = (facts: { value: string }[] | undefined, max = 3) =>
   (facts ?? []).slice(0, max).map((fact) => label(fact.value))
 
 export async function getRadarView(radar: RadarRow): Promise<RadarView> {
-  const [runs, leads] = await Promise.all([
+  const [runs, leads, watched] = await Promise.all([
     query<RunRow>(
       `select id, radar_id, kind, run_key, parent_run_id, status, provider_response_id, published_on_or_after, scheduled_at,
          started_at, completed_at, retry_count, manual_retry_count, error_code, outcome, coverage, created_at,
@@ -219,14 +255,18 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     ),
     // Held (probable duplicate) leads are stored for review but never displayed.
     query<LeadRow>(
-      `select id, run_id, discovered_at, data, score_total, user_status, user_status_at
+      `select id, run_id, discovered_at, data, score_total, user_status, user_status_at, dismiss_reason
        from leads where radar_id = $1 and held_reason is null
        order by discovered_at desc, score_total desc, published_date desc`,
       [radar.id],
     ),
+    query<WatchedSourceRow>(`select * from watched_sources where radar_id = $1 order by published desc, hits desc, created_at limit 12`, [radar.id]),
   ])
   const now = new Date()
-  const expired = now.getTime() >= new Date(radar.research_ends_at).getTime()
+  const endsAt = new Date(radar.research_ends_at)
+  const live = agentLive(radar.plan, endsAt, now)
+  // A free radar is never "expired" while its first search can still run; a paid one expires when the plan lapses.
+  const expired = now.getTime() >= endsAt.getTime()
   const profile = radar.profile
   const lastCompleted = runs.find((run) => run.status === 'completed')
 
@@ -240,7 +280,7 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     timezoneInferred: radar.timezone_inferred,
     createdAt: iso(radar.created_at)!,
     researchEndsAt: iso(radar.research_ends_at)!,
-    nextRunAt: expired ? null : iso(radar.next_run_at),
+    nextRunAt: expired || !live ? null : iso(radar.next_run_at),
     expired,
     now: now.toISOString(),
     businessName: profile?.name ?? null,
@@ -266,6 +306,10 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
       runs.find((run) => run.kind === 'follow_up'),
       expired,
     ),
+    latestWatchRun: toRunView(
+      runs.find((run) => run.kind === 'watch'),
+      expired,
+    ),
     lastResearchAt: iso(lastCompleted?.completed_at),
     leads: leads.map((lead) => ({
       id: lead.id,
@@ -273,6 +317,7 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
       discoveredAt: iso(lead.discovered_at)!,
       status: lead.user_status,
       statusAt: iso(lead.user_status_at),
+      dismissReason: lead.dismiss_reason,
       data: lead.data,
     })),
     slowRunThresholdMs: config.slowRunThresholdMs,
@@ -280,17 +325,44 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     hasEmail: Boolean(radar.email),
     emailMasked: radar.email ? maskEmail(radar.email) : null,
     emailUnsubscribed: Boolean(radar.email_unsubscribed_at),
+    webhookUrl: radar.webhook_url,
+    plan: radar.plan,
+    agentLive: live,
+    currentPeriodEnd: iso(radar.current_period_end),
+    priceUsd: config.planPriceUsd,
+    billingConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID),
+    watchedSources: watched.map((source) => ({ id: source.id, kind: source.kind, label: source.label, enabled: source.enabled, hits: source.hits, published: source.published })),
   }
 }
 
-export async function updateLeadStatus(radarId: string, leadId: string, status: LeadRow['user_status']) {
-  const rows = await query(`update leads set user_status = $3, user_status_at = case when $3 = 'new' then null else now() end
-     where id = $2 and radar_id = $1 returning id`, [
-    radarId,
-    leadId,
-    status,
-  ])
+export async function setWebhookUrl(radarId: string, url: string | null) {
+  await query(`update radars set webhook_url = $2 where id = $1`, [radarId, url])
+}
+
+export async function setWatchedSourceEnabled(radarId: string, sourceId: string, enabled: boolean) {
+  const rows = await query(`update watched_sources set enabled = $3 where id = $2 and radar_id = $1 returning id`, [radarId, sourceId, enabled])
   return rows.length > 0
+}
+
+/**
+ * Lead status is the user's feedback: contacted leads become examples of what they want, dismissed ones (with a
+ * reason) of what to avoid. Per-topic contacted counts steer which searches run first.
+ */
+export async function updateLeadStatus(radarId: string, leadId: string, status: LeadRow['user_status'], reason: DismissReason | null = null) {
+  const rows = await query(
+    `update leads set user_status = $3, user_status_at = case when $3 = 'new' then null else now() end,
+       dismiss_reason = case when $3 = 'dismissed' then coalesce($4, dismiss_reason, 'other') else null end
+     where id = $2 and radar_id = $1 returning id`,
+    [radarId, leadId, status, reason],
+  )
+  if (!rows.length) return false
+  await query(
+    `update search_stats s set contacted = (
+       select count(*)::int from leads l where l.radar_id = s.radar_id and l.topic = s.topic and l.user_status = 'contacted'
+     ) where s.radar_id = $1`,
+    [radarId],
+  )
+  return true
 }
 
 /**
@@ -300,8 +372,9 @@ export async function updateLeadStatus(radarId: string, leadId: string, status: 
 export async function updateFocus(radar: RadarRow, focus: Focus | null) {
   if (focus) {
     const allowed = new Set((radar.profile?.services ?? []).map((fact) => fact.value))
-    focus = { services: focus.services.filter((service) => allowed.has(service)), market: focus.market }
-    if (!focus.services.length && !focus.market) focus = null
+    const text = (value: string | null | undefined) => (value?.trim() ? value.trim().slice(0, 300) : null)
+    focus = { services: focus.services.filter((service) => allowed.has(service)), market: focus.market, wanted: text(focus.wanted), avoid: text(focus.avoid) }
+    if (!focus.services.length && !focus.market && !focus.wanted && !focus.avoid) focus = null
   }
   await query(`update radars set focus = $2 where id = $1`, [radar.id, focus ? JSON.stringify(focus) : null])
 }

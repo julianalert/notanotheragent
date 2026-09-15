@@ -1,18 +1,24 @@
 /*
  * Run the real research workflow for one website without touching the database, and report what happened.
- * Billed: one OpenAI research request, plus at most one follow-up when the follow-up rule says so.
+ * Billed: OpenAI (and Exa for the pipeline) requests, plus at most one follow-up when the follow-up rule says so.
  *
- *   npm run research:eval -- https://example-agency.com
+ *   npm run research:eval -- https://example-agency.com                 # provider from the environment
+ *   npm run research:eval -- --provider pipeline https://example.com    # force the discovery pipeline
+ *   npm run research:eval -- --provider openai https://example.com      # force the hosted-search provider
  *
  * Prints the acquisition brief, proposed vs executed searches, every candidate with its decision and reasons,
- * and writes a full JSON report to .data/evals/. Only use websites you own or are authorised to research.
+ * and writes a full JSON report to .data/evals/. With a golden file at evals/golden/<host>.json
+ * ({ "accepted": ["https://..."] }) it also prints precision and recall of the published leads.
+ * Only use websites you own or are authorised to research.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { AUTOMATIC_FOLLOW_UPS, ResearchResult, type ResearchResultT } from '../src/lib/research/contract'
 import { followUpDecision, qualifyCandidates, validateProfile, type PriorOpportunity } from '../src/lib/research/gates'
 import { buildResearchInput, lintQuery } from '../src/lib/research/prompt'
-import { getProvider } from '../src/lib/research/provider'
+import { createPipelineProvider, memoryPipelineStore } from '../src/lib/research/pipeline'
+import { getProvider, type ResearchProvider } from '../src/lib/research/provider'
+import { sourceKey } from '../src/lib/research/gates'
 import { normaliseWebsite } from '../src/lib/url'
 
 const POLL_MS = 10_000
@@ -20,8 +26,9 @@ const DEADLINE_MS = 15 * 60_000
 
 type Attempt = Awaited<ReturnType<typeof research>>
 
+let provider: ResearchProvider
+
 async function research(input: ReturnType<typeof buildResearchInput>) {
-  const provider = getProvider()
   const started = Date.now()
   const { responseId } = await provider.start(input)
   let inspection = await provider.inspect(responseId)
@@ -45,13 +52,14 @@ async function research(input: ReturnType<typeof buildResearchInput>) {
     repaired = true
   }
   if (!parsed.success) throw new Error(`output does not match the schema: ${parsed.error.message.slice(0, 400)}`)
-  return { result: parsed.data, auditUrls: inspection.auditUrls, actions: inspection.actions, usage: inspection.usage, seconds, repaired }
+  return { result: parsed.data, auditUrls: inspection.auditUrls, actions: inspection.actions, usage: inspection.usage, seconds, repaired, raw: inspection.raw }
 }
 
 function report(label: string, attempt: Attempt, q: ReturnType<typeof qualifyCandidates> | null) {
   const { result, actions, usage, seconds } = attempt
   const executed = actions.filter((a) => a.query).map((a) => a.query!)
-  console.log(`\n=== ${label}: ${result.research_status} in ${seconds}s, ${usage.web_search_calls} tool calls, ${usage.input_tokens} in / ${usage.output_tokens} out tokens${attempt.repaired ? ', format repair' : ''}`)
+  const extra = usage.extra_cost_usd !== undefined ? `, $${usage.extra_cost_usd.toFixed(3)} connector cost` : ''
+  console.log(`\n=== ${label}: ${result.research_status} in ${seconds}s, ${usage.web_search_calls} searches, ${usage.input_tokens} in / ${usage.output_tokens} out tokens${extra}${attempt.repaired ? ', format repair' : ''}`)
   console.log(`proposed queries (${result.search_plan.proposed_queries.length}):`)
   for (const query of result.search_plan.proposed_queries) console.log(`  - ${query}`)
   console.log(`executed searches (${executed.length}), opened pages: ${actions.filter((a) => a.type === 'open_page').length}`)
@@ -74,10 +82,19 @@ function report(label: string, attempt: Attempt, q: ReturnType<typeof qualifyCan
 }
 
 async function main() {
-  const website = normaliseWebsite(process.argv[2])
-  if (!website.ok) throw new Error(`Usage: npm run research:eval -- https://example.com (${website.error})`)
+  const args = process.argv.slice(2)
+  const providerFlag = args.indexOf('--provider')
+  const forced = providerFlag >= 0 ? args.splice(providerFlag, 2)[1] : process.env.RESEARCH_PROVIDER
+  const website = normaliseWebsite(args[0])
+  if (!website.ok) throw new Error(`Usage: npm run research:eval -- [--provider pipeline|openai] https://example.com (${website.error})`)
   if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is required')
-  process.env.RESEARCH_PROVIDER = 'openai'
+  if (forced === 'pipeline' || (!forced && process.env.EXA_API_KEY)) {
+    provider = createPipelineProvider(memoryPipelineStore())
+  } else {
+    process.env.RESEARCH_PROVIDER = 'openai'
+    provider = getProvider()
+  }
+  console.log(`provider: ${provider.name}${provider.name === 'pipeline' ? (process.env.EXA_API_KEY ? ' (exa + reddit + hn)' : ' (openai search fallback + reddit + hn)') : ''}`)
 
   const now = new Date()
   const initialInput = buildResearchInput({ mode: 'initial', now, websiteUrl: website.url, lastSuccessfulRunAt: null, profile: null, excluded: [], focus: null })
@@ -145,11 +162,30 @@ async function main() {
     evaluation.followUpQualified = q2
   }
 
+  await golden(website.host, [...(q1?.published ?? []), ...((evaluation.followUpQualified as ReturnType<typeof qualifyCandidates> | undefined)?.published ?? [])])
+
   const dir = path.join(process.cwd(), '.data', 'evals')
   await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, `${website.host}-${now.toISOString().replace(/[:.]/g, '-')}.json`)
   await fs.writeFile(file, JSON.stringify(evaluation, null, 2))
   console.log(`\nfull report: ${file}`)
+}
+
+/** Precision and recall of published leads against a hand-made list of accepted source URLs. */
+async function golden(host: string, published: Array<{ sourceUrl: string }>) {
+  const file = path.join(process.cwd(), 'evals', 'golden', `${host}.json`)
+  let accepted: string[]
+  try {
+    accepted = (JSON.parse(await fs.readFile(file, 'utf8')) as { accepted: string[] }).accepted
+  } catch {
+    return
+  }
+  const acceptedKeys = new Set(accepted.map((url) => sourceKey(url)).filter(Boolean))
+  const publishedKeys = published.map((lead) => sourceKey(lead.sourceUrl)).filter(Boolean)
+  const truePositives = publishedKeys.filter((key) => acceptedKeys.has(key)).length
+  const precision = publishedKeys.length ? truePositives / publishedKeys.length : 0
+  const recall = acceptedKeys.size ? truePositives / acceptedKeys.size : 0
+  console.log(`\ngolden set (${file}): ${truePositives} of ${publishedKeys.length} published are accepted; precision ${(precision * 100).toFixed(0)}%, recall ${(recall * 100).toFixed(0)}% of ${acceptedKeys.size}`)
 }
 
 function safeJson(text: string): ResearchResultT | null {

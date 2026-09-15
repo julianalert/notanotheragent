@@ -23,7 +23,8 @@ function log(event: string, details: Record<string, unknown>) {
 type ClaimedRun = {
   id: string
   radar_id: string
-  kind: 'initial' | 'daily' | 'follow_up'
+  kind: 'initial' | 'daily' | 'follow_up' | 'watch'
+  plan: 'free' | 'active' | 'past_due' | 'cancelled'
   parent_kind: 'initial' | 'daily' | null
   outcome: RunOutcome
   email_attempts: number
@@ -65,7 +66,7 @@ export async function sendPendingEmails() {
          limit 1
          for update of rr2 skip locked
        ) and r.id = rr.radar_id
-       returning rr.id, rr.radar_id, rr.kind, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext,
+       returning rr.id, rr.radar_id, rr.kind, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext, r.plan,
          (select p.kind from research_runs p where p.id = rr.parent_run_id) as parent_kind,
          r.website_host, r.profile->>'name' as business_name, r.research_ends_at`,
     )
@@ -75,9 +76,11 @@ export async function sendPendingEmails() {
 }
 
 async function deliver(run: ClaimedRun) {
+  // Every lead not yet emailed, not only this run's: watch finds wait for the digest, an instant alert takes them along.
   const leads = await query<{ id: string; data: LeadT }>(
-    `select id, data from leads where run_id = $1 and held_reason is null order by score_total desc, published_date desc`,
-    [run.id],
+    `select id, data from leads where radar_id = $1 and emailed_at is null and held_reason is null
+     order by score_total desc, published_date desc limit 10`,
+    [run.radar_id],
   )
 
   let privateUrl: string
@@ -88,16 +91,13 @@ async function deliver(run: ClaimedRun) {
     return
   }
   const unsubscribeUrl = `${appUrl()}/api/unsubscribe/${unsubscribeCode(run.radar_id)}`
-  const daysLeft = Math.max(0, Math.ceil((new Date(run.research_ends_at).getTime() - Date.now()) / 86_400_000))
 
   // A follow-up after the initial run sends the "first results" email that the initial run deferred.
-  const emailKind = run.kind === 'follow_up' ? (run.parent_kind ?? 'daily') : run.kind
-  if (run.kind === 'follow_up' && emailKind === 'initial') {
-    const all = await query<{ id: string; data: LeadT }>(
-      `select id, data from leads where radar_id = $1 and held_reason is null order by score_total desc, published_date desc limit 10`,
-      [run.radar_id],
-    )
-    leads.splice(0, leads.length, ...all)
+  const emailKind: 'initial' | 'daily' | 'instant' =
+    run.kind === 'watch' ? 'instant' : run.kind === 'follow_up' ? (run.parent_kind ?? 'daily') : run.kind
+  if (emailKind !== 'initial' && !leads.length) {
+    await finish(run.id, 'skipped', 'nothing new to email')
+    return
   }
 
   const email = renderRunEmail({
@@ -108,7 +108,7 @@ async function deliver(run: ClaimedRun) {
     leads,
     privateUrl,
     unsubscribeUrl,
-    daysLeft,
+    plan: run.plan,
   })
 
   const result = await sendEmail({
@@ -122,6 +122,7 @@ async function deliver(run: ClaimedRun) {
 
   if (result.ok) {
     await finish(run.id, 'sent', null)
+    if (leads.length) await query(`update leads set emailed_at = now() where id = any($1::uuid[])`, [leads.map((lead) => lead.id)])
     log('email.sent', { run: run.id, kind: run.kind, leads: leads.length, preview: result.preview ? 'written to .data/emails' : undefined })
   } else if (result.retryable && run.email_attempts < MAX_ATTEMPTS) {
     await finish(run.id, 'pending', result.error)
@@ -132,7 +133,7 @@ async function deliver(run: ClaimedRun) {
   }
 }
 
-async function finish(runId: string, status: 'sent' | 'pending' | 'failed', error: string | null) {
+async function finish(runId: string, status: 'sent' | 'pending' | 'failed' | 'skipped', error: string | null) {
   await query(
     `update research_runs set email_status = $2, email_error = $3, email_claimed_at = null,
        email_sent_at = case when $2 = 'sent' then now() else email_sent_at end

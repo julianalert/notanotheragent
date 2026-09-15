@@ -101,16 +101,19 @@ export async function copyText(text: string) {
   }
 }
 
+export type ToastChoices = { options: Array<{ label: string; value: string }>; onChoose: (value: string) => void }
+
 export function useToast() {
-  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null)
+  const [toast, setToast] = useState<{ text: string; undo?: () => void; choices?: ToastChoices } | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
   return {
     toast,
-    show(text: string, undo?: () => void) {
-      setToast({ text, undo })
+    show(text: string, undo?: () => void, choices?: ToastChoices) {
+      setToast({ text, undo, choices })
       clearTimeout(timer.current)
-      timer.current = setTimeout(() => setToast(null), 4000)
+      // A question (why was this dismissed?) stays a little longer than a confirmation.
+      timer.current = setTimeout(() => setToast(null), choices ? 9000 : 4000)
     },
     hide() {
       clearTimeout(timer.current)

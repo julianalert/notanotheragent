@@ -22,7 +22,12 @@ export const PATCH = withErrors(async function patchHandler(request: Request) {
   if (market.length > 200) {
     return json({ error: 'Keep the market under 200 characters.', field: 'market' }, { status: 422 })
   }
+  const wanted = typeof body?.wanted === 'string' ? body.wanted.trim() : ''
+  const avoid = typeof body?.avoid === 'string' ? body.avoid.trim() : ''
+  if (wanted.length > 300 || avoid.length > 300) {
+    return json({ error: 'Keep each guidance note under 300 characters.', field: wanted.length > 300 ? 'wanted' : 'avoid' }, { status: 422 })
+  }
   // Applies to future scheduled runs only: no extra search, no deadline change, no services outside the profile.
-  await updateFocus(radar, { services, market: market || null })
+  await updateFocus(radar, { services, market: market || null, wanted: wanted || null, avoid: avoid || null })
   return json({ ok: true })
 })

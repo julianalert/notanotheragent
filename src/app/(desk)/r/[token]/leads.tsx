@@ -12,11 +12,9 @@ const CONTACT_KIND = {
 } as const
 
 export function IntentTag({ lead }: { lead: LeadView }) {
-  return lead.data.intent === 'explicit_request' ? (
-    <span className="tag tag--request">Explicit request</span>
-  ) : (
-    <span className="tag tag--problem">Stated problem</span>
-  )
+  if (lead.data.intent === 'explicit_request') return <span className="tag tag--request">Explicit request</span>
+  if (lead.data.intent === 'trigger_event') return <span className="tag tag--trigger">Trigger signal</span>
+  return <span className="tag tag--problem">Stated problem</span>
 }
 
 export function statusNote(lead: LeadView, timezone: string) {
@@ -139,7 +137,32 @@ function External({ href, children }: { href: string; children: ReactNode }) {
   )
 }
 
-export type DrawerAction = 'copy' | 'source' | 'contact' | 'dismiss' | 'restore'
+export type DrawerAction = 'copy' | 'source' | 'contact' | 'dismiss' | 'restore' | 'reply' | 'rewrite'
+export type RewriteStyle = 'shorter' | 'direct' | 'friendlier'
+
+const STYLE_LABEL: Record<string, string> = { original: 'Original', shorter: 'Shorter', direct: 'More direct', friendlier: 'Friendlier' }
+
+/**
+ * Where "Reply" goes. Reddit handles get a prefilled direct message; a mailto contact route gets subject and body;
+ * everything else opens the contact route with the message already copied.
+ */
+export function replyUrl(lead: LeadView, message: string) {
+  const d = lead.data
+  const route = d.contact_route.url
+  const handle = d.public_handle?.replace(/^(u\/|@)/, '')
+  if (/reddit\.com/i.test(d.source_url) && handle && !/^\[deleted\]$/i.test(handle)) {
+    const params = new URLSearchParams({ to: handle, subject: d.headline.slice(0, 80), message })
+    return `https://www.reddit.com/message/compose/?${params}`
+  }
+  if (route.startsWith('mailto:')) {
+    const [address, query = ''] = route.slice(7).split('?')
+    const params = new URLSearchParams(query)
+    if (!params.has('subject')) params.set('subject', d.headline.slice(0, 80))
+    params.set('body', message)
+    return `mailto:${address}?${params}`
+  }
+  return route
+}
 
 export function LeadDrawer({
   lead,
@@ -164,13 +187,15 @@ export function LeadDrawer({
   onPrev: () => void
   onNext: () => void
   onClose: () => void
-  onAction: (action: DrawerAction, message?: string) => void
+  onAction: (action: DrawerAction, message?: string, style?: RewriteStyle) => Promise<string | void> | void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const drawerRef = useRef<HTMLElement>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [rewriting, setRewriting] = useState<RewriteStyle | null>(null)
+  const [variant, setVariant] = useState<string>('original')
   const drag = useRef<{ startY: number; dy: number; active: boolean }>({ startY: 0, dy: 0, active: false })
 
   // Reset the editable message and scroll position whenever another lead is shown.
@@ -179,6 +204,7 @@ export function LeadDrawer({
   if (leadId !== shownId) {
     setShownId(leadId)
     setEditing(false)
+    setVariant('original')
     setDraft(lead?.data.outreach_message ?? '')
   }
   useEffect(() => {
@@ -194,6 +220,19 @@ export function LeadDrawer({
   const d = lead.data
   const quote = excerptOf(lead)
   const note = statusNote(lead, timezone)
+  const enrichment = d.enrichment ?? null
+  const variants = [{ style: 'original', message: d.outreach_message }, ...(d.outreach_drafts ?? []).map((item) => ({ style: item.style, message: item.message }))]
+
+  async function rewrite(style: RewriteStyle) {
+    setRewriting(style)
+    const message = await onAction('rewrite', draft, style)
+    setRewriting(null)
+    if (typeof message === 'string') {
+      setDraft(message)
+      setVariant(style)
+      setEditing(false)
+    }
+  }
   const identityBits = [d.public_handle && d.person_name ? d.public_handle : null, d.role, d.company_name !== author(lead) ? d.company_name : null].filter(Boolean)
 
   function onGrabDown(event: React.PointerEvent) {
@@ -304,6 +343,61 @@ export function LeadDrawer({
           </section>
         )}
 
+        {enrichment && (
+          <section className="sec">
+            <h3>
+              Who they are <span className={`conf conf--${enrichment.confidence}`}>{enrichment.confidence} confidence</span>
+            </h3>
+            <dl className="facts facts--tight">
+              {enrichment.company_name && (
+                <div>
+                  <dt>Company</dt>
+                  <dd>{enrichment.company_name}</dd>
+                </div>
+              )}
+              {enrichment.role && (
+                <div>
+                  <dt>Role</dt>
+                  <dd>{enrichment.role}</dd>
+                </div>
+              )}
+              {enrichment.location && (
+                <div>
+                  <dt>Location</dt>
+                  <dd>{enrichment.location}</dd>
+                </div>
+              )}
+              {enrichment.company_website && (
+                <div>
+                  <dt>Website</dt>
+                  <dd>
+                    <External href={enrichment.company_website}>{hostOf(enrichment.company_website)}</External>
+                  </dd>
+                </div>
+              )}
+              {enrichment.profile_url && (
+                <div>
+                  <dt>Profile</dt>
+                  <dd>
+                    <External href={enrichment.profile_url}>{hostOf(enrichment.profile_url)}</External>
+                  </dd>
+                </div>
+              )}
+            </dl>
+            {enrichment.company_summary && <p>{enrichment.company_summary}</p>}
+            <p className="enrich-note">
+              Found on{' '}
+              {enrichment.evidence.map((item, index) => (
+                <span key={item.url}>
+                  {index > 0 && ', '}
+                  <External href={item.url}>{item.title || hostOf(item.url)}</External>
+                </span>
+              ))}
+              . Public business information only; check it before relying on it.
+            </p>
+          </section>
+        )}
+
         {d.caveats.length > 0 && (
           <section className="sec">
             <h3>Before you send</h3>
@@ -326,6 +420,31 @@ export function LeadDrawer({
             <button type="button" className="btn btn--quiet btn--sm" onClick={() => setEditing((value) => !value)}>
               {editing ? 'Done' : 'Edit'}
             </button>
+          </div>
+          <div className="msg__tools">
+            {variants.length > 1 &&
+              variants.map((item) => (
+                <button
+                  key={item.style}
+                  type="button"
+                  className={`chip ${variant === item.style ? 'is-on' : ''}`}
+                  onClick={() => {
+                    setVariant(item.style)
+                    setDraft(item.message)
+                    setEditing(false)
+                  }}
+                >
+                  {STYLE_LABEL[item.style] ?? item.style}
+                </button>
+              ))}
+            <span className="msg__rewrite">
+              Rewrite:
+              {(['shorter', 'direct', 'friendlier'] as RewriteStyle[]).map((style) => (
+                <button key={style} type="button" className="link" disabled={rewriting !== null} onClick={() => rewrite(style)}>
+                  {rewriting === style ? 'writing…' : STYLE_LABEL[style].toLowerCase()}
+                </button>
+              ))}
+            </span>
           </div>
           {editing ? (
             <>
@@ -427,10 +546,13 @@ export function LeadDrawer({
           </>
         ) : (
           <>
-            <button type="button" className="btn btn--brand" onClick={() => onAction('copy', draft)}>
+            <button type="button" className="btn btn--brand" onClick={() => onAction('reply', draft)} title={replyUrl(lead, draft)}>
+              Reply
+            </button>
+            <button type="button" className="btn btn--line" onClick={() => onAction('copy', draft)}>
               Copy message
             </button>
-            <button type="button" className="btn btn--line" onClick={() => onAction('source')}>
+            <button type="button" className="btn btn--quiet" onClick={() => onAction('source')}>
               Open source
             </button>
             <button type="button" className="btn btn--quiet" onClick={() => onAction('contact')}>

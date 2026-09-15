@@ -1,4 +1,5 @@
 import 'server-only'
+import { agentLive } from './billing/subscription'
 import { config } from './config'
 import { query, transaction } from './db'
 import type { RadarRow, RunRow } from './radars'
@@ -14,14 +15,18 @@ import {
   type ResearchResultT,
   type RunOutcome,
 } from './research/contract'
-import { followUpDecision, isResearchOpen, qualifyCandidates, validateProfile } from './research/gates'
-import { buildResearchInput, lintQuery, type ExcludedOpportunity, type PreviousCandidate } from './research/prompt'
+import { followUpDecision, isResearchOpen, qualifyCandidates, sourceKey, validateProfile } from './research/gates'
+import { enrichLead } from './research/enrich'
+import type { PipelineSummary } from './research/pipeline'
+import { postWebhook } from './email/webhook'
+import { buildResearchInput, lintQuery, type ExcludedOpportunity, type Feedback, type PreviousCandidate } from './research/prompt'
 import {
   getProvider,
   isRetryable,
   ResearchError,
   type ErrorCode,
   type ResearchProvider,
+  type RunContext,
   type ToolAction,
   type Usage,
 } from './research/provider'
@@ -42,6 +47,7 @@ function log(event: string, details: Record<string, unknown>) {
 export async function tick() {
   await expireResearch()
   await enqueueDueDailyRuns()
+  await enqueueDueWatchRuns()
 
   for (let i = 0; i < MAX_PER_TICK; i++) {
     const run = await claim(`rr.status = 'queued' and rr.scheduled_at <= now()`)
@@ -74,7 +80,7 @@ async function expireResearch() {
 async function enqueueDueDailyRuns() {
   const due = await query<Pick<RadarRow, 'id' | 'timezone' | 'next_run_at' | 'research_ends_at'>>(
     `select id, timezone, next_run_at, research_ends_at from radars
-     where next_run_at <= now() and research_ends_at > now() and profile is not null
+     where next_run_at <= now() and research_ends_at > now() and profile is not null and plan in ('active', 'past_due')
      order by next_run_at limit 100`,
   )
   const now = new Date()
@@ -92,6 +98,34 @@ async function enqueueDueDailyRuns() {
        values ($1, 'daily', $2, 'queued', now())
        on conflict (radar_id, kind, run_key) do nothing`,
       [radar.id, localDateKey(new Date(radar.next_run_at!), radar.timezone)],
+    )
+  }
+}
+
+/**
+ * Watch runs: every WATCH_INTERVAL_HOURS, an active radar polls the sources it watches and searches its proven
+ * topics for anything new. Never while another run for the radar is queued or running (the morning run comes first).
+ */
+async function enqueueDueWatchRuns() {
+  const due = await query<{ id: string; last_watch_at: Date | null }>(
+    `select r.id, r.last_watch_at from radars r
+     where r.plan in ('active', 'past_due') and r.research_ends_at > now() and r.profile is not null and r.activated_at is not null
+       and (r.last_watch_at is null or r.last_watch_at < now() - ($1 || ' hours')::interval)
+       and not exists (select 1 from research_runs rr where rr.radar_id = r.id and rr.status in ('queued', 'running', 'processing'))
+     order by r.last_watch_at nulls first limit 50`,
+    [String(config.watchIntervalHours)],
+  )
+  for (const radar of due) {
+    const claimed = await query(
+      `update radars set last_watch_at = now() where id = $1 and last_watch_at is not distinct from $2 returning id`,
+      [radar.id, radar.last_watch_at],
+    )
+    if (!claimed.length) continue
+    await query(
+      `insert into research_runs (radar_id, kind, run_key, status, scheduled_at)
+       values ($1, 'watch', $2, 'queued', now())
+       on conflict (radar_id, kind, run_key) do nothing`,
+      [radar.id, `watch:${new Date().toISOString().slice(0, 13)}`],
     )
   }
 }
@@ -144,6 +178,15 @@ async function withinBudget() {
   return row.runs < config.dailyRunCap && Number(row.spend ?? 0) < config.dailySpendCapUsd
 }
 
+/** Spend per radar this calendar month. Watch runs stop at the cap; the morning run always goes ahead. */
+async function withinRadarBudget(radarId: string) {
+  const [row] = await query<{ spend: string | null }>(
+    `select sum(cost_usd) as spend from research_runs where radar_id = $1 and started_at >= date_trunc('month', now())`,
+    [radarId],
+  )
+  return Number(row?.spend ?? 0) < config.monthlyRadarBudgetUsd
+}
+
 /* --------------------------------- Start ---------------------------------- */
 
 async function startRun(run: RunRow) {
@@ -163,15 +206,37 @@ async function startRun(run: RunRow) {
     await finishFailed(run.id, 'provider_failed', `Radar has no validated profile for a ${run.kind} run`)
     return
   }
+  if (run.kind === 'watch' && !(await withinRadarBudget(radar.id))) {
+    await query(
+      `update research_runs set status = 'cancelled', error_code = 'budget_reached', error = 'Monthly research budget for this radar reached',
+         completed_at = now(), lease_until = null where id = $1 and status = 'queued'`,
+      [run.id],
+    )
+    log('runs.radar_budget_reached', { run: run.id })
+    return
+  }
 
   const now = new Date()
-  const [lastSuccess, prior] = await Promise.all([
+  const [lastSuccess, prior, memory] = await Promise.all([
     lastSuccessfulRunAt(radar.id),
-    query<{ source_url: string; published_date: Date | string; user_status: ExcludedOpportunity['status']; data: LeadT }>(
-      `select source_url, published_date, user_status, data from leads where radar_id = $1 order by discovered_at`,
+    query<{ source_url: string; source_key: string; published_date: Date | string; user_status: ExcludedOpportunity['status']; dismiss_reason: string | null; user_status_at: Date | null; data: LeadT }>(
+      `select source_url, source_key, published_date, user_status, dismiss_reason, user_status_at, data from leads where radar_id = $1 order by discovered_at`,
       [radar.id],
     ),
+    runMemory(radar.id, run.kind),
   ])
+  // Feedback: the most recently contacted and dismissed leads, as examples of what the user wants and rejects.
+  const judged = prior.filter((lead) => lead.user_status !== 'new').sort((a, b) => (b.user_status_at ? new Date(b.user_status_at).getTime() : 0) - (a.user_status_at ? new Date(a.user_status_at).getTime() : 0))
+  const feedback: Feedback = {
+    liked: judged.filter((lead) => lead.user_status === 'contacted').slice(0, 5).map((lead) => ({ headline: lead.data.headline, need_summary: lead.data.need_summary, buyer_match: lead.data.buyer_match ?? '' })),
+    rejected: judged.filter((lead) => lead.user_status === 'dismissed').slice(0, 5).map((lead) => ({ headline: lead.data.headline, need_summary: lead.data.need_summary, reason: lead.dismiss_reason ?? 'other' })),
+  }
+  const context: RunContext = {
+    excludeKeys: [...new Set([...prior.map((lead) => lead.source_key), ...memory.excludeKeys])],
+    priorityTopics: memory.priorityTopics,
+    deadTopics: memory.deadTopics,
+    subreddits: run.kind === 'watch' ? memory.watchedSubreddits : [],
+  }
   // A follow-up receives the previous run's candidates, queries and untried angles, and searches the same window.
   let followUp: { previousCandidates: PreviousCandidate[]; previousQueries: string[]; untriedAngles: string[]; windowStart?: string } = {
     previousCandidates: [],
@@ -208,6 +273,7 @@ async function startRun(run: RunRow) {
     lastSuccessfulRunAt: lastSuccess,
     profile: radar.profile,
     focus: radar.focus,
+    feedback,
     // Every stored opportunity in compact form, including held, contacted and dismissed.
     excluded: prior.map((lead) => ({
       source_url: lead.source_url,
@@ -234,13 +300,48 @@ async function startRun(run: RunRow) {
   }
 
   try {
-    const { responseId } = await provider.start(input)
+    const { responseId } = await provider.start(input, context)
     // Persist the response id on the leased run immediately.
     await query(`update research_runs set provider_response_id = $2, lease_until = null where id = $1`, [run.id, responseId])
     log('runs.started', { run: run.id, kind: run.kind, provider: provider.name, attempt: run.retry_count + 1 })
   } catch (error) {
     const code = error instanceof ResearchError ? error.code : 'provider_failed'
     await handleFailure(started[0], code, (error as Error).message)
+  }
+}
+
+/**
+ * What the radar already knows: sources seen in the last 30 days (an unresolved one may be checked once more),
+ * candidates already judged (a follow-up re-examines them, so it gets none), topics that produced leads, and
+ * topics that never produced a candidate after three runs.
+ */
+async function runMemory(radarId: string, kind: RunRow['kind']) {
+  const [seen, candidates, stats, watched] = await Promise.all([
+    query<{ source_key: string }>(
+      `select source_key from seen_sources
+       where radar_id = $1 and last_seen_at > now() - interval '30 days' and not (decision = 'unresolved' and times_seen < 2)`,
+      [radarId],
+    ),
+    kind === 'follow_up'
+      ? Promise.resolve([] as Array<{ source_key: string }>)
+      : query<{ source_key: string }>(
+          `select distinct source_key from research_candidates where radar_id = $1 and source_key is not null and decision <> 'unresolved'`,
+          [radarId],
+        ),
+    query<{ topic: string; runs: number; candidates: number; published: number; contacted: number }>(
+      `select topic, runs, candidates, published, contacted from search_stats where radar_id = $1`,
+      [radarId],
+    ),
+    query<{ key: string }>(`select key from watched_sources where radar_id = $1 and kind = 'subreddit' and enabled order by published desc, hits desc limit 8`, [radarId]),
+  ])
+  return {
+    watchedSubreddits: watched.map((row) => row.key),
+    excludeKeys: [...seen.map((row) => row.source_key), ...candidates.map((row) => row.source_key)],
+    priorityTopics: stats
+      .filter((row) => row.published > 0 || row.contacted > 0)
+      .sort((a, b) => b.contacted - a.contacted || b.published - a.published || b.candidates - a.candidates)
+      .map((row) => row.topic),
+    deadTopics: stats.filter((row) => row.runs >= 3 && row.candidates === 0).map((row) => row.topic),
   }
 }
 
@@ -265,7 +366,7 @@ async function checkRun(run: RunRow) {
     return
   }
 
-  const overDeadline = run.started_at && Date.now() - new Date(run.started_at).getTime() > config.runDeadlineMs
+  const overDeadline = run.started_at && Date.now() - new Date(run.started_at).getTime() > (provider.deadlineMs ?? config.runDeadlineMs)
   if (overDeadline) {
     // Cancel, then resolve the terminal state exactly once; it may have completed just before cancellation.
     await provider.cancel(run.provider_response_id)
@@ -321,6 +422,9 @@ function addUsage(a: Usage, b: Usage): Usage {
     output_tokens: a.output_tokens + b.output_tokens,
     reasoning_tokens: a.reasoning_tokens + b.reasoning_tokens,
     web_search_calls: a.web_search_calls + b.web_search_calls,
+    ...(a.extra_cost_usd !== undefined || b.extra_cost_usd !== undefined
+      ? { extra_cost_usd: (a.extra_cost_usd ?? 0) + (b.extra_cost_usd ?? 0) }
+      : {}),
   }
 }
 
@@ -446,6 +550,14 @@ async function saveResults(
   }
 
   const published = qualified?.published ?? []
+  // Enrichment: the public business footprint behind each published lead, bounded so a slow search never blocks the run.
+  if (published.length && profile && getProvider().name !== 'mock') {
+    const enriched = await Promise.allSettled(published.map((item) => enrichLead(item.lead, profile, 45_000)))
+    enriched.forEach((outcome, index) => {
+      published[index].lead.enrichment = outcome.status === 'fulfilled' ? outcome.value : null
+      if (outcome.status === 'rejected') log('runs.enrich_failed', { run: run.id, error: String((outcome.reason as Error)?.message ?? outcome.reason).slice(0, 120) })
+    })
+  }
   const followUp = followUpDecision({
     enabled: AUTOMATIC_FOLLOW_UPS,
     kind: run.kind,
@@ -458,6 +570,13 @@ async function saveResults(
   })
 
   const executedSearches = actions.filter((action) => action.query).map((action) => action.query!)
+  const pipeline = (raw as { pipeline?: PipelineSummary } | null)?.pipeline ?? null
+  // Which search topic surfaced each source (pipeline runs only), for per-topic yields and lead feedback.
+  const topicBySource = new Map<string, string>()
+  for (const source of pipeline?.sources ?? []) {
+    const key = sourceKey(source.url)
+    if (key) topicBySource.set(key, source.topic)
+  }
   const diagnostics: RunDiagnostics = {
     model: provider.model,
     prompt_version: PROMPT_VERSION,
@@ -493,24 +612,39 @@ async function saveResults(
   if (run.kind === 'follow_up' && run.parent_run_id) {
     parentKind = (await query<{ kind: string }>(`select kind from research_runs where id = $1`, [run.parent_run_id]))[0]?.kind ?? null
   }
+  // Watch runs email at once only for a strong explicit request; everything else waits for the morning digest,
+  // which sends every lead not yet emailed (leads.emailed_at), so nothing is lost or sent twice.
+  const instant = published.some((lead) => lead.lead.intent === 'explicit_request' && lead.score.total >= config.instantAlertMinScore)
+  const [unemailedRow] = await query<{ count: number }>(
+    `select count(*)::int as count from leads where radar_id = $1 and emailed_at is null and held_reason is null and run_id <> $2`,
+    [radar.id, run.id],
+  )
+  const unemailed = unemailedRow.count + published.length
   const emailStatus =
     run.kind === 'initial'
       ? followUp.run
         ? 'skipped'
         : 'pending'
-      : published.length > 0 || parentKind === 'initial'
-        ? 'pending'
-        : 'skipped'
+      : run.kind === 'watch'
+        ? instant
+          ? 'pending'
+          : 'skipped'
+        : unemailed > 0 || parentKind === 'initial'
+          ? 'pending'
+          : 'skipped'
 
+  // Hosted searches are priced per call; connector costs already priced by the provider (Exa) come as extra_cost_usd.
   const cost =
     (usage.input_tokens / 1e6) * config.cost.inputPerMTok +
     (usage.output_tokens / 1e6) * config.cost.outputPerMTok +
-    usage.web_search_calls * config.cost.perWebSearch
+    (usage.extra_cost_usd !== undefined ? usage.extra_cost_usd : usage.web_search_calls * config.cost.perWebSearch)
 
   // Profile, leads, candidates, follow-up and run outcome persist atomically.
   await transaction(async (tx) => {
     if (run.kind === 'initial') {
-      const nextRun = profile ? nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour) : null
+      // The free first search does not schedule anything; an active plan gets its morning run.
+      const live = agentLive(radar.plan, new Date(radar.research_ends_at), now)
+      const nextRun = profile && live ? nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour) : null
       await tx.query(`update radars set profile = $2, next_run_at = coalesce(next_run_at, $3) where id = $1`, [
         radar.id,
         profileToSave ? JSON.stringify(profileToSave) : null,
@@ -523,8 +657,8 @@ async function saveResults(
     for (const lead of published) {
       await tx.query(
         `insert into leads (radar_id, run_id, source_url, source_key, identity_key, need_text, published_date, intent,
-           score_total, discovered_at, data)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           score_total, discovered_at, data, topic)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (radar_id, source_key) do nothing`,
         [
           radar.id,
@@ -538,8 +672,64 @@ async function saveResults(
           lead.score.total,
           now,
           JSON.stringify(lead.lead satisfies LeadT),
+          topicBySource.get(lead.sourceKey) ?? null,
         ],
       )
+    }
+
+    // Watched sources: the communities where candidates were found, polled by watch runs once the agent is active.
+    if (pipeline) {
+      const communities = new Map<string, { hits: number; published: number }>()
+      for (const source of pipeline.sources) {
+        if (!source.community?.startsWith('r/')) continue
+        const key = sourceKey(source.url)
+        const decision = key ? (qualified?.outcomes ?? []).find((outcome) => outcome.source_key === key)?.decision : undefined
+        const entry = communities.get(source.community) ?? { hits: 0, published: 0 }
+        entry.hits++
+        if (decision === 'published') entry.published++
+        communities.set(source.community, entry)
+      }
+      for (const [community, entry] of communities) {
+        await tx.query(
+          `insert into watched_sources (radar_id, kind, key, label, hits, published, last_item_at)
+           values ($1, 'subreddit', $2, $3, $4, $5, now())
+           on conflict (radar_id, kind, key) do update set hits = watched_sources.hits + excluded.hits,
+             published = watched_sources.published + excluded.published, last_item_at = now()`,
+          [radar.id, community.slice(2), community, entry.hits, entry.published],
+        )
+      }
+      if (run.kind === 'watch') {
+        await tx.query(`update watched_sources set last_polled_at = now() where radar_id = $1 and enabled`, [radar.id])
+      }
+    }
+
+    // Memory: every hit the pipeline triaged, with what became of it, and each topic's yield this run.
+    if (pipeline) {
+      const decisionByKey = new Map<string, string>()
+      for (const outcome of qualified?.outcomes ?? []) if (outcome.source_key) decisionByKey.set(outcome.source_key, outcome.decision)
+      for (const hit of pipeline.triage) {
+        const key = sourceKey(hit.url)
+        if (!key) continue
+        await tx.query(
+          `insert into seen_sources (radar_id, source_key, url, triage_score, decision)
+           values ($1, $2, $3, $4, $5)
+           on conflict (radar_id, source_key) do update set last_seen_at = now(), times_seen = seen_sources.times_seen + 1,
+             triage_score = excluded.triage_score, decision = excluded.decision`,
+          [radar.id, key, hit.url, hit.score, decisionByKey.get(key) ?? 'triaged_out'],
+        )
+      }
+      for (const topic of pipeline.topics) {
+        const hits = pipeline.searches.filter((search) => search.query === topic.query).reduce((sum, search) => sum + search.hits, 0)
+        const outcomesForTopic = (qualified?.outcomes ?? []).filter((outcome) => outcome.source_key && topicBySource.get(outcome.source_key) === topic.query)
+        await tx.query(
+          `insert into search_stats (radar_id, topic, runs, hits, candidates, published, last_used_at)
+           values ($1, $2, 1, $3, $4, $5, now())
+           on conflict (radar_id, topic) do update set runs = search_stats.runs + 1, hits = search_stats.hits + excluded.hits,
+             candidates = search_stats.candidates + excluded.candidates, published = search_stats.published + excluded.published,
+             last_used_at = now()`,
+          [radar.id, topic.query, hits, outcomesForTopic.length, outcomesForTopic.filter((outcome) => outcome.decision === 'published').length],
+        )
+      }
     }
 
     await tx.query(`delete from research_candidates where run_id = $1`, [run.id])
@@ -607,6 +797,12 @@ async function saveResults(
       ],
     )
   })
+
+  if (published.length && radar.webhook_url) {
+    await postWebhook(radar.webhook_url, { websiteHost: radar.website_host, leads: published.map((item) => item.lead) }).catch((error) =>
+      log('runs.webhook_failed', { run: run.id, error: (error as Error).message.slice(0, 120) }),
+    )
+  }
 
   log('runs.completed', {
     run: run.id,

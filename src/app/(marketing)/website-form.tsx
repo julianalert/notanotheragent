@@ -89,7 +89,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
         </p>
       )}
       <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
-        🔥 Free lead research for 14 days. No account needed.
+        🔥 Your first search is free. No account needed.
       </p>
     </form>
   )

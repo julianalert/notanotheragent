@@ -78,7 +78,7 @@ export function EmailForm({
         </p>
       )}
       <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
-        🔥 We’ll email your best matches every morning for 14 days. Unsubscribe anytime.
+        🔥 We’ll email your first leads as soon as they’re ready. Unsubscribe anytime.
       </p>
     </form>
   )

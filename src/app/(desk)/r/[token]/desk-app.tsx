@@ -2,7 +2,7 @@
 
 import type { LeadView, RadarView } from '@/lib/radars'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { LeadDrawer, LeadItem, type DrawerAction } from './leads'
+import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
 import { copyText, countWord, groupLabel, localDateKey, relativeMoment, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
 import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, stageFor } from './screens'
@@ -12,6 +12,14 @@ const IDLE_POLL_MS = 60000
 const READY_HOLD_MS = 1200
 
 const isInProgress = (status: string | undefined) => status === 'queued' || status === 'running' || status === 'processing'
+
+/** One tap tells the agent why a lead was wrong; the answer shapes the next searches. */
+const DISMISS_CHOICES = [
+  { label: 'Not a buyer', value: 'not_a_buyer' },
+  { label: 'Wrong need', value: 'wrong_need' },
+  { label: 'Too old', value: 'too_old' },
+  { label: 'Already knew', value: 'already_known' },
+]
 
 type Screen = 'email' | 'searching' | 'unreadable' | 'unsupported' | 'empty' | 'leads'
 
@@ -33,6 +41,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   const [cursor, setCursor] = useState(0)
   const [openId, setOpenId] = useState<string | null>(null)
   const [editingFocus, setEditingFocus] = useState(false)
+  const [activating, setActivating] = useState(false)
   const lastStage = useRef('')
   const sawProgress = useRef(isInProgress(initialView.initialRun?.status))
   const { toast, show: showToast, hide: hideToast } = useToast()
@@ -154,6 +163,19 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     return () => clearTimeout(timer)
   }, [screen, view.leads])
 
+  // Back from Stripe Checkout: one-time confirmation, then a clean URL.
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('activated') !== '1') return
+    url.searchParams.delete('activated')
+    window.history.replaceState(null, '', url.toString())
+    const timer = setTimeout(() => {
+      showToast('Your agent is live. Its first search starts now.')
+      refresh()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [showToast, refresh])
+
   // Lock page scroll behind the drawer.
   useEffect(() => {
     if (!drawerOpen) return
@@ -167,14 +189,16 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   /* ----------------------------- Actions ---------------------------- */
 
   const persistStatus = useCallback(
-    async (leadId: string, status: LeadView['status']) => {
+    async (leadId: string, status: LeadView['status'], reason: string | null = null) => {
       setView((current) => ({
         ...current,
         leads: current.leads.map((lead) =>
-          lead.id === leadId ? { ...lead, status, statusAt: status === 'new' ? null : new Date().toISOString() } : lead,
+          lead.id === leadId
+            ? { ...lead, status, statusAt: status === 'new' ? null : new Date().toISOString(), dismissReason: status === 'dismissed' ? ((reason ?? lead.dismissReason ?? 'other') as LeadView['dismissReason']) : null }
+            : lead,
         ),
       }))
-      const response = await api(`/leads/${leadId}`, { method: 'PATCH', body: JSON.stringify({ status }) }).catch(() => null)
+      const response = await api(`/leads/${leadId}`, { method: 'PATCH', body: JSON.stringify({ status, reason }) }).catch(() => null)
       if (!response?.ok) {
         showToast('We couldn’t save that change. Try again.')
         refresh()
@@ -195,20 +219,58 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
         setOpenId(next ? next.id : null)
       }
       setCursor(Math.max(0, Math.min(index, remaining.length - 1)))
-      showToast(message, () => {
+      const undo = () => {
         void persistStatus(lead.id, previous)
         hideToast()
-      })
+      }
+      if (status === 'dismissed') {
+        showToast(`${message} — why?`, undo, {
+          options: DISMISS_CHOICES,
+          onChoose: (reason) => {
+            void persistStatus(lead.id, 'dismissed', reason)
+            showToast('Noted. The next searches will avoid leads like this.')
+          },
+        })
+      } else {
+        showToast(message, undo)
+      }
     },
     [rows, openId, persistStatus, showToast, hideToast],
   )
 
   const onDrawerAction = useCallback(
-    async (action: DrawerAction, draft?: string) => {
+    async (action: DrawerAction, draft?: string, style?: RewriteStyle): Promise<string | void> => {
       if (!openLead) return
+      const message = draft ?? openLead.data.outreach_message
       if (action === 'copy') {
-        if (await copyText(draft ?? openLead.data.outreach_message)) showToast('Message copied')
+        if (await copyText(message)) showToast('Message copied')
         return
+      }
+      if (action === 'reply') {
+        // The message travels in the URL where the platform allows it; otherwise it is on the clipboard.
+        const url = replyUrl(openLead, message)
+        const prefilled = /reddit\.com\/message\/compose|^mailto:/i.test(url)
+        if (!prefilled) await copyText(message)
+        window.open(url, '_blank', 'noopener,noreferrer')
+        if (openLead.status === 'new') setStatus(openLead, 'contacted', prefilled ? 'Marked contacted' : 'Message copied, marked contacted')
+        return
+      }
+      if (action === 'rewrite' && style) {
+        const response = await api(`/leads/${openLead.id}/draft`, { method: 'POST', body: JSON.stringify({ style }) }).catch(() => null)
+        const body = (await response?.json().catch(() => ({}))) ?? {}
+        if (!response?.ok || !body.draft) {
+          showToast(body.error ?? 'We couldn’t rewrite the message. Try again.')
+          return
+        }
+        setView((current) => ({
+          ...current,
+          leads: current.leads.map((lead) =>
+            lead.id === openLead.id
+              ? { ...lead, data: { ...lead.data, outreach_drafts: [...(lead.data.outreach_drafts ?? []).filter((item) => item.style !== style), body.draft] } }
+              : lead,
+          ),
+        }))
+        return body.draft.message as string
       }
       if (action === 'source') {
         window.open(openLead.data.source_url, '_blank', 'noopener,noreferrer')
@@ -218,7 +280,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       if (action === 'dismiss') return setStatus(openLead, 'dismissed', 'Lead dismissed')
       if (action === 'restore') return setStatus(openLead, 'new', 'Moved back to Today')
     },
-    [openLead, setStatus, showToast],
+    [openLead, setStatus, showToast, api],
   )
 
   const step = useCallback(
@@ -267,7 +329,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     return () => document.removeEventListener('keydown', onKey)
   }, [screen, openId, openLead, rows, safeCursor, step, setStatus])
 
-  async function saveFocus(focus: { services: string[]; market: string } | null) {
+  async function saveFocus(focus: { services: string[]; market: string; wanted: string; avoid: string } | null) {
     const response = await api('/focus', { method: 'PATCH', body: JSON.stringify(focus ?? { reset: true }) }).catch(() => null)
     if (!response) return 'We couldn’t save your focus. Check your connection.'
     if (!response.ok) return (await response.json().catch(() => ({}))).error ?? 'We couldn’t save your focus.'
@@ -278,6 +340,37 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   async function setTimezone(timezone: string) {
     await api('/timezone', { method: 'PATCH', body: JSON.stringify({ timezone }) }).catch(() => null)
     await refresh()
+  }
+
+  /** Stripe Checkout (activation) and the Customer Portal (billing) are hosted pages: the browser goes there. */
+  async function billing(path: '/checkout' | '/billing-portal') {
+    setActivating(true)
+    const response = await api(path, { method: 'POST' }).catch(() => null)
+    const body = (await response?.json().catch(() => ({}))) ?? {}
+    if (response?.ok && typeof body.url === 'string') {
+      window.location.assign(body.url)
+      return
+    }
+    setActivating(false)
+    showToast(body.error ?? 'We couldn’t open the billing page. Try again.')
+  }
+
+  async function saveWebhook(url: string) {
+    const response = await api('/webhook', { method: 'PATCH', body: JSON.stringify({ url }) }).catch(() => null)
+    if (!response) return 'Check your connection and try again.'
+    if (!response.ok) return ((await response.json().catch(() => ({}))).error as string | undefined) ?? 'We couldn’t save that.'
+    await refresh()
+    showToast(url ? 'New leads will also be posted there' : 'Webhook removed')
+    return null
+  }
+
+  async function toggleSource(id: string, enabled: boolean) {
+    setView((current) => ({ ...current, watchedSources: current.watchedSources.map((source) => (source.id === id ? { ...source, enabled } : source)) }))
+    const response = await api('/sources', { method: 'PATCH', body: JSON.stringify({ id, enabled }) }).catch(() => null)
+    if (!response?.ok) {
+      showToast('We couldn’t save that change.')
+      refresh()
+    }
   }
 
   async function retry() {
@@ -361,6 +454,11 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           currentView={deskView}
           counts={counts}
           viewsEnabled={screen === 'leads'}
+          activating={activating}
+          onActivate={() => billing('/checkout')}
+          onPortal={() => billing('/billing-portal')}
+          onToggleSource={toggleSource}
+          onWebhook={saveWebhook}
           onView={(next) => {
             setDeskView(next)
             setCursor(0)
@@ -410,7 +508,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
           {screen === 'unreadable' && <DeadEnd view={view} kind="unreadable" />}
           {screen === 'unsupported' && <DeadEnd view={view} kind="unsupported" />}
-          {screen === 'empty' && <NoResults view={view} />}
+          {screen === 'empty' && <NoResults view={view} onActivate={() => billing('/checkout')} activating={activating} />}
 
           {screen === 'leads' && (
             <>
@@ -431,10 +529,18 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                       </>
                     )}
                     <span className="sep" aria-hidden="true" />
-                    {view.expired ? (
-                      <span>Research period ended</span>
+                    {!view.agentLive ? (
+                      <span>
+                        Agent asleep —{' '}
+                        <button type="button" className="link" onClick={() => billing('/checkout')} disabled={activating}>
+                          activate it
+                        </button>{' '}
+                        to keep searching
+                      </span>
                     ) : dailyNote ? (
                       <span>{dailyNote}</span>
+                    ) : isInProgress(view.latestWatchRun?.status) ? (
+                      <span>Checking your watched sources now</span>
                     ) : view.nextRunAt ? (
                       <span>
                         Next search <b>{relativeMoment(view.nextRunAt, view.now, view.timezone)}</b>
@@ -472,9 +578,9 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                   </h3>
                   <p>
                     {deskView === 'today'
-                      ? view.expired
-                        ? 'Your research period has ended. Contacted and dismissed leads are still here.'
-                        : 'New matches land here after the next morning search, and in your inbox at the same time.'
+                      ? view.agentLive
+                        ? 'New matches land here from the morning search and from your watched sources through the day, and in your inbox.'
+                        : 'Your agent is asleep. Activate it and new matches land here every morning and through the day.'
                       : deskView === 'contacted'
                         ? 'Open a lead and mark it contacted once you have sent your message. It then leaves Today.'
                         : 'Dismiss a lead when it isn’t a fit. It leaves Today, and you can restore it here.'}
@@ -556,6 +662,15 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
       <div className={`toast ${toast ? 'show' : ''}`} role="status">
         <span>{toast?.text}</span>
+        {toast?.choices && (
+          <span className="choices">
+            {toast.choices.options.map((option) => (
+              <button key={option.value} type="button" className="choice" onClick={() => toast.choices!.onChoose(option.value)}>
+                {option.label}
+              </button>
+            ))}
+          </span>
+        )}
         {toast?.undo && (
           <button type="button" onClick={toast.undo}>
             Undo

@@ -142,6 +142,86 @@ create table if not exists research_candidates (
 create index if not exists research_candidates_run_idx on research_candidates (run_id);
 create index if not exists research_candidates_radar_idx on research_candidates (radar_id, decision);
 
+-- research-v3: discovery pipeline state, one row per pipeline run (its id is the run's provider_response_id).
+create table if not exists pipeline_runs (
+  id uuid primary key default gen_random_uuid(),
+  state jsonb not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+
+-- research-v3 memory: every source the pipeline saw (never re-read within 30 days), per-topic yields, feedback.
+create table if not exists seen_sources (
+  radar_id uuid not null references radars(id) on delete cascade,
+  source_key text not null,
+  url text not null,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  times_seen integer not null default 1,
+  triage_score integer,
+  decision text,
+  primary key (radar_id, source_key)
+);
+create index if not exists seen_sources_radar_idx on seen_sources (radar_id, last_seen_at desc);
+
+create table if not exists search_stats (
+  radar_id uuid not null references radars(id) on delete cascade,
+  topic text not null,
+  runs integer not null default 0,
+  hits integer not null default 0,
+  candidates integer not null default 0,
+  published integer not null default 0,
+  contacted integer not null default 0,
+  last_used_at timestamptz not null default now(),
+  primary key (radar_id, topic)
+);
+
+alter table leads add column if not exists topic text;
+alter table leads add column if not exists dismiss_reason text
+  check (dismiss_reason in ('not_a_buyer', 'wrong_need', 'too_old', 'already_known', 'other'));
+
+
+-- Paid activation and continuous watching (research-v3).
+alter table radars add column if not exists plan text not null default 'free'
+  check (plan in ('free', 'active', 'past_due', 'cancelled'));
+alter table radars add column if not exists stripe_customer_id text;
+alter table radars add column if not exists stripe_subscription_id text;
+alter table radars add column if not exists activated_at timestamptz;
+alter table radars add column if not exists current_period_end timestamptz;
+alter table radars add column if not exists last_watch_at timestamptz;
+alter table radars add column if not exists webhook_url text;
+create index if not exists radars_subscription_idx on radars (stripe_subscription_id) where stripe_subscription_id is not null;
+
+create table if not exists stripe_events (
+  id text primary key,
+  type text not null,
+  received_at timestamptz not null default now()
+);
+
+alter table research_runs drop constraint if exists research_runs_kind_check;
+alter table research_runs add constraint research_runs_kind_check check (kind in ('initial', 'daily', 'follow_up', 'watch'));
+
+-- Leads wait for the morning digest unless an instant alert sent them; leads stored before this column were emailed by their run.
+alter table leads add column if not exists emailed_at timestamptz;
+update leads set emailed_at = created_at where emailed_at is null and created_at < now() - interval '1 hour';
+
+create table if not exists watched_sources (
+  id uuid primary key default gen_random_uuid(),
+  radar_id uuid not null references radars(id) on delete cascade,
+  kind text not null check (kind in ('subreddit', 'hn', 'exa_query', 'feed')),
+  key text not null,
+  label text not null,
+  added_by text not null default 'agent' check (added_by in ('agent', 'user')),
+  enabled boolean not null default true,
+  last_polled_at timestamptz,
+  last_item_at timestamptz,
+  hits integer not null default 0,
+  published integer not null default 0,
+  created_at timestamptz not null default now(),
+  unique (radar_id, kind, key)
+);
+
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (
   id uuid primary key default gen_random_uuid(),

@@ -17,6 +17,7 @@ import { RADAR_COOKIE } from '@/lib/http'
 import { findRadarByToken } from '@/lib/radars'
 import { cookies } from 'next/headers'
 import { EvidenceDemo, ExampleRadar, FitDemo, MessageDemo } from './home-demos'
+import { Pricing } from './pricing'
 import { SiteNavbar } from './site-chrome'
 import { WebsiteForm } from './website-form'
 
@@ -88,7 +89,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           subheadline={
             <p>
               Your website already says what you sell. We read it, search the public web for people asking for exactly
-              that, and email you what we find every morning for two weeks.
+              that, and email you what we find. Activate your agent and it keeps going every morning.
             </p>
           }
           features={
@@ -118,8 +119,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
                 headline="New leads in your inbox every morning"
                 subheadline={
                   <p>
-                    For 14 days we search again at 8:00 in your timezone and email you the new matches. Everything is
-                    also saved on your private page. Some days there are none, and we don’t pad the list.
+                    Your first search is free. Activate your agent and it searches again every morning, watches the
+                    communities where your buyers post through the day, and emails you the new matches. Some days
+                    there are none, and we don’t pad the list.
                   </p>
                 }
               />
@@ -180,17 +182,29 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           }
         />
 
+        <Pricing />
+
         <FAQsTwoColumnAccordion
           id="faq"
           headline="Questions & answers"
-          subheadline={<p>Everything about how the free research period works.</p>}
+          subheadline={<p>How the free first search and the paid agent work.</p>}
         >
           <Faq
-            question="Is it really free?"
+            question="What does it cost?"
             answer={
               <p>
-                Yes. Research runs for 14 days from the moment you enter your website. There is no payment step and
-                nothing to cancel.
+                Your first search is free: you see every lead, source and message. Keeping the agent running is $99 a
+                month, billed by card through Stripe, and you can cancel any time from your private page.
+              </p>
+            }
+          />
+          <Faq
+            question="What does the agent do once it’s active?"
+            answer={
+              <p>
+                It searches again every morning at 8:00 in your timezone, polls the communities where it found your
+                buyers every few hours, emails you the moment a strong request appears, and learns from every lead you
+                mark contacted or dismissed.
               </p>
             }
           />
@@ -207,8 +221,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             question="How often will you email me?"
             answer={
               <p>
-                Once when your first results are ready, then only on mornings with new matches, for 14 days. Every
-                email has a one-click unsubscribe link.
+                Once when your first results are ready. With the agent active: a morning digest on days with new
+                matches, and an instant note when someone posts a strong explicit request. Every email has a one-click
+                unsubscribe link.
               </p>
             }
           />
@@ -226,13 +241,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             answer={<p>Never. We draft a first message; you decide whether and how to send it.</p>}
           />
           <Faq
-            question="What happens after 14 days?"
-            answer={<p>Searching stops. Your leads, sources and messages stay available on the same private link.</p>}
+            question="What happens if I cancel?"
+            answer={<p>Searching stops at the end of the paid month. Your leads, sources and messages stay available on the same private link.</p>}
           />
         </FAQsTwoColumnAccordion>
 
         <CallToActionSimple
-          eyebrow="Free for 14 days · No account"
+          eyebrow="First search free · No account"
           headline="See who is asking for what you sell this week."
           subheadline={<p>Enter your website and your email. Your first leads usually arrive within minutes.</p>}
           cta={
