@@ -46,7 +46,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
 
   return (
     <form onSubmit={submit} noValidate className="mt-4 flex w-full max-w-lg flex-col gap-3">
-      <label htmlFor={`${id}-website`} className="text-sm/7 font-medium text-mist-950 dark:text-white">
+      <label htmlFor={`${id}-website`} className="sr-only">
         Your business website
       </label>
       <div
