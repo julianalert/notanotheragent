@@ -6,6 +6,8 @@ import {
   isResearchOpen,
   qualifyLeads,
   DATE_FROM_SEARCH_CAVEAT,
+  matchesServices,
+  normalisePublishedDate,
   sameService,
   sourceKey,
   validateProfile,
@@ -484,5 +486,56 @@ describe('regressions from the notanotheragent.com run', () => {
     const lead = redditLead()
     lead.evidence[3] = { ...lead.evidence[3], url: 'https://www.reddit.com/r/marketingagency/comments/9zzzzzz/other_post/' }
     expect(run([lead]).rejected[0].reasons).toContain('publication date evidence is not from the original source')
+  })
+})
+
+describe('regressions from the second notanotheragent.com run', () => {
+  const lrProfile: BusinessProfileT = {
+    ...profile,
+    services: [
+      { value: 'Daily/public-web lead research for agencies: scans for companies publicly signaling that they need the agency’s services and sends the best matches by email.', basis: 'stated', evidence_ids: ['p1'] },
+      { value: 'Lead verification: opens sources, checks dates, and includes evidence so users can verify each opportunity.', basis: 'stated', evidence_ids: ['p1'] },
+      { value: 'First-message drafting for the user to send; the service does not contact prospects on the user’s behalf.', basis: 'stated', evidence_ids: ['p1'] },
+    ],
+  }
+  const matched = 'Public buying-signal lead research for agencies, with checked source evidence and a drafted first message'
+
+  function jsonLead() {
+    const url = 'https://www.reddit.com/r/agencynewbies/comments/1w6xmv1/how_to_get_clients/'
+    return makeLead({
+      public_handle: 'u/Firm-Alarm-7464',
+      source_url: url,
+      published_date: '2026-09-04T07:39:24Z',
+      matched_service: matched,
+      intent: 'stated_problem',
+      identity_evidence_ids: ['L2'],
+      date_evidence_ids: ['L2'],
+      need_evidence_ids: ['L2'],
+      score: { intent: 2, service_fit: 3, freshness: 1, contactability: 2 },
+      contact_route: { url, kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['L2'] },
+      evidence: [
+        { id: 'L2', url: `${url}.json`, title: 'How to get clients?', inspected_original: true, excerpt: 'tried cold mailing them but it takes lot of time', paraphrase: 'Cold email takes them a lot of time.' },
+      ],
+    })
+  }
+
+  it('publishes a lead read via Reddit .json with a full timestamp and a combined service name', () => {
+    const lead = jsonLead()
+    const result = qualifyLeads([lead], ctx([lead], { profile: lrProfile }))
+    expect(result.rejected).toEqual([])
+    expect(result.published[0].lead.published_date).toBe('2026-09-04')
+    expect(result.published[0].score.freshness).toBe(1)
+  })
+
+  it('normalises timestamps but still rejects non-dates', () => {
+    expect(normalisePublishedDate('2026-09-14T14:46:34Z')).toBe('2026-09-14')
+    expect(normalisePublishedDate('2026-09-14')).toBe('2026-09-14')
+    expect(normalisePublishedDate('5 days ago')).toBeNull()
+    expect(normalisePublishedDate('2026-13-40T00:00:00Z')).toBeNull()
+  })
+
+  it('still rejects a service the website does not document', () => {
+    expect(matchesServices(lrProfile.services.map((s) => s.value), matched)).toBe(true)
+    expect(matchesServices(lrProfile.services.map((s) => s.value), 'Paid ads management and creative production for ecommerce brands')).toBe(false)
   })
 })

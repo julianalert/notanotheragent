@@ -89,6 +89,13 @@ export function auditKeysFor(input: string): string[] {
   return [canonical, ids?.thread].filter((key): key is string => Boolean(key))
 }
 
+/** Two URLs point at the same post: same canonical URL or the same platform post/comment (e.g. Reddit .json). */
+export function sameSource(a: string, b: string | null) {
+  if (!b) return false
+  const ka = sourceKey(a.replace(/\.json(?=$|\?)/i, ''))
+  return ka !== null && ka === sourceKey(b.replace(/\.json(?=$|\?)/i, ''))
+}
+
 function hostOf(input: string) {
   try {
     return new URL(input).hostname.toLowerCase().replace(/^www\./, '')
@@ -137,6 +144,15 @@ export function identityKey(lead: Pick<LeadT, 'company_name' | 'public_handle' |
 const blank = (value: string | null | undefined) => !value || !value.trim()
 
 /* --------------------------------- Dates ---------------------------------- */
+
+/**
+ * The model sometimes returns full timestamps (e.g. Reddit created_utc as "2026-09-14T14:46:34Z"). Keep the calendar
+ * date as written; anything that isn't an ISO date or timestamp stays invalid.
+ */
+export function normalisePublishedDate(value: string | null | undefined): string | null {
+  const match = value?.trim().match(/^(\d{4}-\d{2}-\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/)
+  return match && parseIsoDate(match[1]) ? match[1] : null
+}
 
 export function parseIsoDate(value: string | null | undefined) {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
@@ -257,6 +273,21 @@ export function sameService(profileService: string, matched: string) {
   return shared / claimed.size >= 0.5
 }
 
+/**
+ * Match against one documented service, or against the documented services together when the model describes a
+ * combination of them (e.g. "lead research with checked evidence and a drafted message"). Nothing outside the
+ * documented services can match.
+ */
+export function matchesServices(services: string[], matched: string) {
+  if (services.some((service) => sameService(service, matched))) return true
+  const claimed = serviceStems(matched)
+  if (claimed.size < 3) return false
+  const documented = new Set(services.flatMap((service) => [...serviceStems(service)]))
+  let shared = 0
+  for (const stem of claimed) if (documented.has(stem)) shared++
+  return shared / claimed.size >= 0.6
+}
+
 export const DATE_FROM_SEARCH_CAVEAT = 'The publication date comes from search results for this post, not from the page itself.'
 
 /**
@@ -270,7 +301,7 @@ export function applyQuoteBudget(lead: LeadT): LeadT {
   const used = new Map<string, number>()
   const trimmed = new Map<string, EvidenceT>()
   for (const item of ordered) {
-    const key = canonicalUrl(item.url) ?? item.url
+    const key = sourceKey(item.url.replace(/\.json(?=$|\?)/i, '')) ?? item.url
     const words = wordCount(item.excerpt)
     const total = (used.get(key) ?? 0) + words
     if (words > 0 && total > MAX_EXCERPT_WORDS_PER_SOURCE && !needIds.has(item.id)) {
@@ -317,7 +348,7 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   // A handle is the author shown on the original post: inspecting that page is the evidence (Reddit quotes and
   // URLs don't contain usernames). Company and person names still need explicit support.
   const identityFromOriginal = identityItems.some(
-    (item) => item.inspected_original && sourceCanonical !== null && canonicalUrl(item.url) === sourceCanonical,
+    (item) => item.inspected_original && sourceCanonical !== null && sameSource(item.url, sourceUrl),
   )
   if (!blank(lead.public_handle) && !identityFromOriginal && !mentionedIn(lead.public_handle!, identityItems)) {
     reasons.push('public handle is not supported by identity evidence')
@@ -333,7 +364,7 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   }
   if (
     sourceCanonical &&
-    !needItems.some((item) => item.inspected_original && canonicalUrl(item.url) === sourceCanonical)
+    !needItems.some((item) => item.inspected_original && sameSource(item.url, sourceUrl))
   ) {
     reasons.push('original source was not reported inspected')
   }
@@ -356,7 +387,7 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   for (const id of lead.date_evidence_ids) {
     const item = evidence.get(id)
     if (!item || item.inspected_original) continue
-    if (sourceCanonical !== null && canonicalUrl(item.url) === sourceCanonical) dateFromSearchResult = true
+    if (sourceCanonical !== null && sameSource(item.url, sourceUrl)) dateFromSearchResult = true
     else reasons.push('publication date evidence is not from the original source')
   }
   const published = parseIsoDate(lead.published_date)
@@ -381,9 +412,9 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   // Service fit against the extracted profile (and user focus, when set).
   if (blank(lead.fit_explanation)) reasons.push('empty fit explanation')
   const profileServices = ctx.profile.services.map((service) => service.value)
-  if (!profileServices.some((service) => sameService(service, lead.matched_service))) {
+  if (!matchesServices(profileServices, lead.matched_service)) {
     reasons.push('matched service is not in the extracted profile')
-  } else if (ctx.focus?.services.length && !ctx.focus.services.some((service) => sameService(service, lead.matched_service))) {
+  } else if (ctx.focus?.services.length && !matchesServices(ctx.focus.services, lead.matched_service)) {
     reasons.push('matched service is outside the selected focus')
   }
 
@@ -416,7 +447,8 @@ export function qualifyLeads(leads: LeadT[], ctx: GateContext) {
   const rejected: RejectedLead[] = []
 
   for (const original of leads) {
-    const lead = applyQuoteBudget(original)
+    const normalisedDate = normalisePublishedDate(original.published_date)
+    const lead = applyQuoteBudget(normalisedDate ? { ...original, published_date: normalisedDate } : original)
     const { reasons, sourceUrl, dateFromSearchResult, score } = leadGateReasons(lead, ctx, auditKeys)
     if (reasons.length || !sourceUrl) {
       rejected.push({ headline: lead.headline, source_url: lead.source_url, reasons })
