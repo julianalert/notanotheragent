@@ -17,7 +17,6 @@ create table if not exists radars (
   token_hash text not null unique,
   website text not null,
   website_host text not null,
-  output_language text not null default 'en',
   profile jsonb,
   focus jsonb,
   timezone text not null default 'UTC',

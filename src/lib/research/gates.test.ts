@@ -5,6 +5,7 @@ import {
   freshnessFor,
   isResearchOpen,
   qualifyLeads,
+  DATE_FROM_SEARCH_CAVEAT,
   sameService,
   sourceKey,
   validateProfile,
@@ -438,5 +439,50 @@ describe('email delivery helpers', () => {
     expect(email.html).not.toContain('<img src=x')
     expect(email.html).toContain('&lt;script&gt;')
     expect(email.html).toContain('https://app.example/api/unsubscribe/code')
+  })
+})
+
+describe('regressions from the notanotheragent.com run', () => {
+  // Shape copied from the production output: handle only, four quotes from one Reddit post, date from search results.
+  function redditLead() {
+    const url = 'https://www.reddit.com/r/marketingagency/comments/1wbb6sk/agency_growth_is_stalled/'
+    return makeLead({
+      public_handle: 'u/Winter_Milk6072',
+      source_url: url,
+      identity_evidence_ids: ['E1'],
+      need_evidence_ids: ['E2', 'E3'],
+      date_evidence_ids: ['E4'],
+      contact_route: { url, kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['E1'] },
+      evidence: [
+        { id: 'E1', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'I’ve been running my agency on the side with a team of 4 for around three years.', paraphrase: 'Runs a small agency.' },
+        { id: 'E2', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'the sole bottleneck right now is me building the pipeline.', paraphrase: 'Pipeline is the bottleneck.' },
+        { id: 'E3', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'cold outreach has hit a brick wall.', paraphrase: 'Cold outreach stopped working.' },
+        { id: 'E4', url, title: 'Search result: Agency growth is stalled', inspected_original: false, excerpt: '[Wednesday September 09 2026]', paraphrase: 'Search result date for this post.' },
+      ],
+    })
+  }
+
+  it('publishes it, trimming extra quotes to the 25-word budget and flagging the search-result date', () => {
+    const lead = redditLead()
+    const result = run([lead])
+    expect(result.rejected).toEqual([])
+    const published = result.published[0].lead
+    const quotedWords = published.evidence.reduce((sum, item) => sum + item.excerpt.split(/\s+/).filter(Boolean).length, 0)
+    expect(quotedWords).toBeLessThanOrEqual(25)
+    expect(published.evidence.find((item) => item.id === 'E2')!.excerpt).not.toBe('')
+    expect(published.evidence.find((item) => item.id === 'E1')!.paraphrase).toBe('Runs a small agency.')
+    expect(published.caveats).toContain(DATE_FROM_SEARCH_CAVEAT)
+  })
+
+  it('still rejects a handle when the original page was never inspected', () => {
+    const lead = redditLead()
+    lead.evidence = lead.evidence.map((item) => ({ ...item, inspected_original: false }))
+    expect(run([lead]).rejected[0].reasons).toContain('public handle is not supported by identity evidence')
+  })
+
+  it('still rejects a date taken from a different page', () => {
+    const lead = redditLead()
+    lead.evidence[3] = { ...lead.evidence[3], url: 'https://www.reddit.com/r/marketingagency/comments/9zzzzzz/other_post/' }
+    expect(run([lead]).rejected[0].reasons).toContain('publication date evidence is not from the original source')
   })
 })

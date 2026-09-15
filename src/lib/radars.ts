@@ -12,7 +12,6 @@ export type RadarRow = {
   token_hash: string
   website: string
   website_host: string
-  output_language: string
   profile: BusinessProfileT | null
   focus: Focus | null
   timezone: string
@@ -85,7 +84,6 @@ export type LeadView = {
 export type RadarView = {
   website: string
   websiteHost: string
-  outputLanguage: string
   timezone: string
   timezoneInferred: boolean
   createdAt: string
@@ -133,7 +131,6 @@ export async function createRadar(input: {
   website: string
   host: string
   timezone: string | null
-  language: string | null
   /** Carried over from this browser's previous radar so the visitor isn't asked twice. */
   email?: string | null
   token?: string
@@ -142,22 +139,20 @@ export async function createRadar(input: {
   // Immutable: research_ends_at = created_at + 14 × 24 hours.
   const endsAt = new Date(now.getTime() + config.researchPeriodMs)
   const timezone = input.timezone && isValidTimeZone(input.timezone) ? input.timezone : 'UTC'
-  const language = input.language && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(input.language) ? input.language : 'en'
   const rows = await query<{ radar_id: string }>(
     `with r as (
-       insert into radars (token_hash, website, website_host, output_language, timezone, timezone_inferred,
+       insert into radars (token_hash, website, website_host, timezone, timezone_inferred,
          created_at, research_started_at, research_ends_at, email, email_added_at, token_ciphertext)
-       values ($1, $2, $3, $4, $5, true, $6, $6, $7, $8, $9, $10)
+       values ($1, $2, $3, $4, true, $5, $5, $6, $7, $8, $9)
        returning id
      )
      insert into research_runs (radar_id, kind, run_key, status, scheduled_at)
-     select id, 'initial', 'initial', 'queued', $6 from r
+     select id, 'initial', 'initial', 'queued', $5 from r
      returning radar_id`,
     [
       input.tokenHash,
       input.website,
       input.host,
-      language,
       timezone,
       now,
       endsAt,
@@ -230,7 +225,6 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   return {
     website: radar.website,
     websiteHost: radar.website_host,
-    outputLanguage: radar.output_language,
     timezone: radar.timezone,
     timezoneInferred: radar.timezone_inferred,
     createdAt: iso(radar.created_at)!,

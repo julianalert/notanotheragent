@@ -47,9 +47,8 @@ export const POST = withErrors(async function postHandler(request: Request) {
   }
 
   const timezone = isValidTimeZone(body?.timezone) ? body.timezone : null
-  const language = typeof body?.language === 'string' ? body.language.slice(0, 35) : null
   const token = createToken()
-  await createRadar({ tokenHash: hashToken(token), website: website.url, host: website.host, timezone, language, email, token })
+  await createRadar({ tokenHash: hashToken(token), website: website.url, host: website.host, timezone, email, token })
 
   cookieStore.set(RADAR_COOKIE, token, {
     httpOnly: true,

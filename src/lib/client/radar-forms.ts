@@ -32,7 +32,6 @@ export async function createRadar(website: string, email?: string): Promise<Crea
         website,
         email,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        language: navigator.language,
       }),
     })
     const body = await response.json().catch(() => ({}))

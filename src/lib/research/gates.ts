@@ -257,6 +257,32 @@ export function sameService(profileService: string, matched: string) {
   return shared / claimed.size >= 0.5
 }
 
+export const DATE_FROM_SEARCH_CAVEAT = 'The publication date comes from search results for this post, not from the page itself.'
+
+/**
+ * Quote budget (spec §1.3): at most 25 quoted words per original source. Quotes proving the need are kept first;
+ * other quotes that would exceed the budget lose their excerpt but keep their paraphrase and link. If the need
+ * quotes alone exceed the budget, nothing is removed and the gate rejects the lead.
+ */
+export function applyQuoteBudget(lead: LeadT): LeadT {
+  const needIds = new Set(lead.need_evidence_ids)
+  const ordered = [...lead.evidence.filter((item) => needIds.has(item.id)), ...lead.evidence.filter((item) => !needIds.has(item.id))]
+  const used = new Map<string, number>()
+  const trimmed = new Map<string, EvidenceT>()
+  for (const item of ordered) {
+    const key = canonicalUrl(item.url) ?? item.url
+    const words = wordCount(item.excerpt)
+    const total = (used.get(key) ?? 0) + words
+    if (words > 0 && total > MAX_EXCERPT_WORDS_PER_SOURCE && !needIds.has(item.id)) {
+      trimmed.set(item.id, { ...item, excerpt: '' })
+      continue
+    }
+    used.set(key, total)
+  }
+  if (!trimmed.size) return lead
+  return { ...lead, evidence: lead.evidence.map((item) => trimmed.get(item.id) ?? item) }
+}
+
 /** Per-lead hard gates. Returns reasons; empty means the lead passes. */
 export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<string | null>) {
   const reasons: string[] = []
@@ -288,7 +314,12 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   if (!blank(lead.person_name) && !mentionedIn(lead.person_name!, identityItems)) {
     reasons.push('person name is not supported by identity evidence')
   }
-  if (!blank(lead.public_handle) && !mentionedIn(lead.public_handle!, identityItems)) {
+  // A handle is the author shown on the original post: inspecting that page is the evidence (Reddit quotes and
+  // URLs don't contain usernames). Company and person names still need explicit support.
+  const identityFromOriginal = identityItems.some(
+    (item) => item.inspected_original && sourceCanonical !== null && canonicalUrl(item.url) === sourceCanonical,
+  )
+  if (!blank(lead.public_handle) && !identityFromOriginal && !mentionedIn(lead.public_handle!, identityItems)) {
     reasons.push('public handle is not supported by identity evidence')
   }
 
@@ -318,10 +349,15 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   }
 
   // Publication date: required, original, inside the window, not in the future.
+  // The date may come from search-result metadata for this exact post (Reddit pages show "5d ago"), never from
+  // another page. Such leads carry a caveat so the user checks the date before relying on it.
   checkRefs('date', lead.date_evidence_ids, evidence, reasons)
+  let dateFromSearchResult = false
   for (const id of lead.date_evidence_ids) {
     const item = evidence.get(id)
-    if (item && !item.inspected_original) reasons.push('publication date evidence was not inspected on the original source')
+    if (!item || item.inspected_original) continue
+    if (sourceCanonical !== null && canonicalUrl(item.url) === sourceCanonical) dateFromSearchResult = true
+    else reasons.push('publication date evidence is not from the original source')
   }
   const published = parseIsoDate(lead.published_date)
   const today = parseIsoDate(ctx.now.toISOString().slice(0, 10))!
@@ -367,7 +403,7 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   if (contactability !== 2) reasons.push('contactability below threshold')
   if (total < 8) reasons.push('total score below threshold')
 
-  return { reasons, sourceUrl, score: { intent, service_fit, freshness, contactability, total } }
+  return { reasons, sourceUrl, dateFromSearchResult, score: { intent, service_fit, freshness, contactability, total } }
 }
 
 /**
@@ -379,8 +415,9 @@ export function qualifyLeads(leads: LeadT[], ctx: GateContext) {
   const passing: QualifiedLead[] = []
   const rejected: RejectedLead[] = []
 
-  for (const lead of leads) {
-    const { reasons, sourceUrl, score } = leadGateReasons(lead, ctx, auditKeys)
+  for (const original of leads) {
+    const lead = applyQuoteBudget(original)
+    const { reasons, sourceUrl, dateFromSearchResult, score } = leadGateReasons(lead, ctx, auditKeys)
     if (reasons.length || !sourceUrl) {
       rejected.push({ headline: lead.headline, source_url: lead.source_url, reasons })
       continue
@@ -392,6 +429,7 @@ export function qualifyLeads(leads: LeadT[], ctx: GateContext) {
         company_website: lead.company_website ? safeOutgoingUrl(lead.company_website) : null,
         contact_route: { ...lead.contact_route, url: safeOutgoingUrl(lead.contact_route.url)! },
         score: { ...lead.score, freshness: score.freshness },
+        caveats: dateFromSearchResult && !lead.caveats.includes(DATE_FROM_SEARCH_CAVEAT) ? [...lead.caveats, DATE_FROM_SEARCH_CAVEAT] : lead.caveats,
       },
       sourceUrl,
       sourceKey: sourceKey(sourceUrl)!,
