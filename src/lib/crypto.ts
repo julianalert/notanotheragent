@@ -46,7 +46,12 @@ export function verifyUnsubscribeCode(code: unknown): string | null {
   if (typeof code !== 'string') return null
   const [radarId, signature] = code.split('.')
   if (!radarId || !signature || !/^[0-9a-f-]{36}$/i.test(radarId)) return null
-  const expected = unsubscribeCode(radarId).split('.')[1]
+  let expected: string
+  try {
+    expected = unsubscribeCode(radarId).split('.')[1]
+  } catch {
+    return null // APP_SECRET not configured: no valid unsubscribe links can exist yet
+  }
   const a = Buffer.from(signature)
   const b = Buffer.from(expected)
   return a.length === b.length && timingSafeEqual(a, b) ? radarId : null
