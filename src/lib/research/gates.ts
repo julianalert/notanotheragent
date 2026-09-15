@@ -41,21 +41,52 @@ export function canonicalUrl(input: string): string | null {
   return `${host}${path}${query}`
 }
 
-/** Prefer a source-specific post ID so the same post under different URLs dedupes. */
+/**
+ * Platform identifiers. `thread` is the post a page belongs to; `item` also includes a comment ID when the URL
+ * is a permalink to one comment. Returns null for sites without a recognised structure.
+ */
+function platformIds(input: string): { thread: string; item: string } | null {
+  let url: URL
+  try {
+    url = new URL(input)
+  } catch {
+    return null
+  }
+  const host = url.hostname.toLowerCase().replace(/^(www|old|new|m|mobile|np)\./, '')
+  const path = url.pathname
+  let match: RegExpMatchArray | null
+  if (host.endsWith('reddit.com') && (match = path.match(/\/comments\/([a-z0-9]+)(?:\/[^/]*\/([a-z0-9]+))?/i))) {
+    const thread = `reddit:${match[1].toLowerCase()}`
+    return { thread, item: match[2] && !/\.json$/i.test(match[2]) ? `${thread}:${match[2].toLowerCase()}` : thread }
+  }
+  if (host === 'redd.it' && (match = path.match(/^\/([a-z0-9]+)/i))) return { thread: `reddit:${match[1].toLowerCase()}`, item: `reddit:${match[1].toLowerCase()}` }
+  if ((host === 'x.com' || host === 'twitter.com') && (match = path.match(/\/status\/(\d+)/))) return { thread: `x:${match[1]}`, item: `x:${match[1]}` }
+  if (host.endsWith('linkedin.com') && (match = path.match(/activity[-:](\d{10,})/))) return { thread: `linkedin:${match[1]}`, item: `linkedin:${match[1]}` }
+  if (host === 'news.ycombinator.com' && url.searchParams.get('id')) {
+    return { thread: `hn:${url.searchParams.get('id')}`, item: `hn:${url.searchParams.get('id')}` }
+  }
+  if (host.endsWith('upwork.com') && (match = path.match(/~([0-9a-f]{10,})/i))) {
+    return { thread: `upwork:${match[1].toLowerCase()}`, item: `upwork:${match[1].toLowerCase()}` }
+  }
+  return null
+}
+
+/** Prefer a source-specific post (and comment) ID so the same item under different URLs dedupes. */
 export function sourceKey(input: string): string | null {
   const canonical = canonicalUrl(input)
   if (!canonical) return null
-  const url = new URL(input)
-  const host = url.hostname.toLowerCase().replace(/^(www|old|new|m|mobile)\./, '')
-  const path = url.pathname
-  let match: RegExpMatchArray | null
-  if (host.endsWith('reddit.com') && (match = path.match(/\/comments\/([a-z0-9]+)/i))) return `reddit:${match[1].toLowerCase()}`
-  if (host === 'redd.it' && (match = path.match(/^\/([a-z0-9]+)/i))) return `reddit:${match[1].toLowerCase()}`
-  if ((host === 'x.com' || host === 'twitter.com') && (match = path.match(/\/status\/(\d+)/))) return `x:${match[1]}`
-  if (host.endsWith('linkedin.com') && (match = path.match(/activity[-:](\d{10,})/))) return `linkedin:${match[1]}`
-  if (host === 'news.ycombinator.com' && url.searchParams.get('id')) return `hn:${url.searchParams.get('id')}`
-  if (host.endsWith('upwork.com') && (match = path.match(/~([0-9a-f]{10,})/i))) return `upwork:${match[1].toLowerCase()}`
-  return canonical
+  return platformIds(input)?.item ?? canonical
+}
+
+/**
+ * Keys under which a consulted page proves a source was inspected: its canonical URL, plus the platform thread
+ * it belongs to. Opening a Reddit thread shows the comments inside it, so a comment permalink is corroborated by
+ * the thread page. This matches a specific post, never a whole domain.
+ */
+export function auditKeysFor(input: string): string[] {
+  const canonical = canonicalUrl(input.replace(/\.json(?=$|\?)/i, ''))
+  const ids = platformIds(input)
+  return [canonical, ids?.thread].filter((key): key is string => Boolean(key))
 }
 
 function hostOf(input: string) {
@@ -192,10 +223,38 @@ function mentionedIn(name: string, items: EvidenceT[], extra: string[] = []) {
   return haystack.includes(target)
 }
 
-function sameService(a: string, b: string) {
-  const x = norm(a)
-  const y = norm(b)
-  return Boolean(x && y && (x === y || x.includes(y) || y.includes(x)))
+const SERVICE_STOPWORDS = new Set(
+  (
+    'and for with from into our your their the of to in on by via without based using including existing ' +
+    'des les une pour avec sans dans par sur aux leur leurs vos nos votre notre entre partir depuis existants existantes'
+  ).split(' '),
+)
+
+/** Content-word stems (5-letter prefixes) so light paraphrases and plurals still compare. */
+function serviceStems(value: string) {
+  return new Set(
+    norm(value)
+      .split(' ')
+      .filter((word) => word.length >= 4 && !SERVICE_STOPWORDS.has(word))
+      .map((word) => word.slice(0, 5)),
+  )
+}
+
+/**
+ * The model names the matched service in its own words. Accept it when it is the same service: exact or
+ * contained text, or at least half of its content words appear in the profile service.
+ */
+export function sameService(profileService: string, matched: string) {
+  const x = norm(profileService)
+  const y = norm(matched)
+  if (!x || !y) return false
+  if (x === y || x.includes(y) || y.includes(x)) return true
+  const service = serviceStems(profileService)
+  const claimed = serviceStems(matched)
+  if (claimed.size < 2) return false
+  let shared = 0
+  for (const stem of claimed) if (service.has(stem)) shared++
+  return shared / claimed.size >= 0.5
 }
 
 /** Per-lead hard gates. Returns reasons; empty means the lead passes. */
@@ -212,7 +271,9 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
   const sourceUrl = safeOutgoingUrl(lead.source_url)
   const sourceCanonical = sourceUrl ? canonicalUrl(sourceUrl) : null
   if (!sourceUrl) reasons.push('source URL is not a public http(s) URL')
-  else if (!auditKeys.has(sourceCanonical)) reasons.push('source URL does not appear in the search tool audit')
+  else if (!auditKeysFor(sourceUrl).some((key) => auditKeys.has(key))) {
+    reasons.push('source URL does not appear in the search tool audit')
+  }
 
   // Identity.
   if (blank(lead.person_name) && blank(lead.company_name) && blank(lead.public_handle)) {
@@ -314,7 +375,7 @@ export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<st
  * Ambiguous probable duplicates are held for review rather than displayed.
  */
 export function qualifyLeads(leads: LeadT[], ctx: GateContext) {
-  const auditKeys = new Set(ctx.auditUrls.map(canonicalUrl))
+  const auditKeys = new Set<string | null>(ctx.auditUrls.flatMap(auditKeysFor))
   const passing: QualifiedLead[] = []
   const rejected: RejectedLead[] = []
 

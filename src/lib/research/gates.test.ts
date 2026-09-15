@@ -5,6 +5,7 @@ import {
   freshnessFor,
   isResearchOpen,
   qualifyLeads,
+  sameService,
   sourceKey,
   validateProfile,
   type GateContext,
@@ -329,5 +330,47 @@ describe('profile and windows', () => {
     })
     expect(parsed.success).toBe(true)
     expect(ResearchResult.safeParse({ schema_version: '1', outcome: 'matches', profile, leads: [], coverage: {} }).success).toBe(false)
+  })
+})
+
+describe('regressions from production runs', () => {
+  const thread =
+    'https://www.reddit.com/r/EntreprendreenFrance/comments/1vzmgp9/comment_aller_parler_%C3%A0_des_artisans_du_b%C3%A2timent/'
+  const comment = `${thread}p68z68b/`
+
+  it('accepts a Reddit comment permalink when its thread page was opened', () => {
+    const lead = makeLead({ source_url: comment, public_handle: 'u/dizzyme_' })
+    lead.evidence[0].url = comment
+    lead.evidence[0].title = 'Comment by u/dizzyme_'
+    lead.contact_route.url = comment
+    const result = qualifyLeads([lead], ctx([lead], { auditUrls: [thread, `${thread}.json`] }))
+    expect(result.rejected).toEqual([])
+    expect(result.published).toHaveLength(1)
+  })
+
+  it('still rejects a comment from a thread that was never opened', () => {
+    const lead = makeLead({ source_url: comment })
+    lead.evidence[0].url = comment
+    const other = 'https://www.reddit.com/r/EntreprendreenFrance/comments/1ux0cie/les_pires_excuses/'
+    expect(qualifyLeads([lead], ctx([lead], { auditUrls: [other] })).rejected[0].reasons).toContain(
+      'source URL does not appear in the search tool audit',
+    )
+  })
+
+  it('keeps different comments in the same thread as separate sources', () => {
+    expect(sourceKey(comment)).toBe('reddit:1vzmgp9:p68z68b')
+    expect(sourceKey(`${thread}zz11aa/`)).not.toBe(sourceKey(comment))
+    expect(sourceKey(thread)).toBe('reddit:1vzmgp9')
+  })
+
+  it('matches a paraphrased service name to the profile service', () => {
+    expect(
+      sameService(
+        'Automatisation des devis et constitution d’une base de prix à partir des factures et données existantes.',
+        'Automatisation IA des devis et du chiffrage BTP à partir des données et processus existants',
+      ),
+    ).toBe(true)
+    expect(sameService('Automatisation des devis et base de prix', 'Référencement SEO et création de contenu')).toBe(false)
+    expect(sameService('Website design', 'Conversion rate optimisation')).toBe(false)
   })
 })
