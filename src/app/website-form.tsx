@@ -45,7 +45,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
   }
 
   return (
-    <form onSubmit={submit} noValidate className="mt-4 flex w-full max-w-lg flex-col gap-3">
+    <form onSubmit={submit} noValidate className="flex w-full max-w-lg flex-col gap-2">
       <label htmlFor={`${id}-website`} className="sr-only">
         Your business website
       </label>
@@ -82,7 +82,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
           {error}
         </p>
       )}
-      <p id={`${id}-hint`} className="px-4 text-sm/6 text-mist-600 dark:text-mist-400">
+      <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
         Free lead research for 14 days. No account needed.
       </p>
     </form>
