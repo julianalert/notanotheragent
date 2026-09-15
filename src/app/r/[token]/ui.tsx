@@ -94,7 +94,7 @@ export function CopyButton({
   text: string
   label: ReactNode
   copiedLabel?: ReactNode
-  variant?: 'soft' | 'solid'
+  variant?: 'soft' | 'solid' | 'accent'
   className?: string
 }) {
   const { copied, copy } = useCopy()
@@ -108,6 +108,8 @@ export function CopyButton({
           'bg-mist-950/10 text-mist-950 hover:bg-mist-950/15 dark:bg-white/10 dark:text-white dark:hover:bg-white/20',
         variant === 'solid' &&
           'bg-mist-950 text-white hover:bg-mist-800 dark:bg-mist-300 dark:text-mist-950 dark:hover:bg-mist-200',
+        variant === 'accent' &&
+          'bg-linear-to-r from-orange-500 to-rose-500 text-white shadow-lg hover:from-orange-600 hover:to-rose-600',
         className,
       )}
     >

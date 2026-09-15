@@ -104,7 +104,7 @@ export function ResearchProgress({
                 <div
                   className={clsx(
                     'h-full rounded-full motion-safe:transition-[width] motion-safe:duration-700',
-                    failed ? 'bg-mist-500' : 'bg-mist-950 dark:bg-white',
+                    failed ? 'bg-mist-500' : 'bg-linear-to-r from-orange-500 to-rose-500',
                   )}
                   style={{ width: `${percent}%` }}
                 />
@@ -169,7 +169,7 @@ export function ResearchProgress({
                                   : 'We couldn’t complete the research for this website.'}
                           </span>
                           {run?.canRetry && (
-                            <Button onClick={onRetry} disabled={retrying} className="disabled:opacity-70">
+                            <Button onClick={onRetry} color="accent" disabled={retrying} className="disabled:opacity-70">
                               {retrying ? 'Retrying…' : 'Retry research'}
                             </Button>
                           )}

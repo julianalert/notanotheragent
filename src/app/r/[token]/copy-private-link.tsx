@@ -11,7 +11,7 @@ export function CopyPrivateLink({ token }: { token: string }) {
     <button
       type="button"
       onClick={() => copy(`${window.location.origin}/r/${token}`)}
-      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-mist-950 px-3 py-1 text-sm/7 font-medium text-white hover:bg-mist-800 dark:bg-mist-300 dark:text-mist-950 dark:hover:bg-mist-200"
+      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-linear-to-r from-orange-500 to-rose-500 px-3 py-1 text-sm/7 font-medium text-white shadow-lg hover:from-orange-600 hover:to-rose-600"
     >
       {copied ? <CheckmarkIcon className="shrink-0" /> : <Squares2StackedIcon className="shrink-0" />}
       <span aria-live="polite">

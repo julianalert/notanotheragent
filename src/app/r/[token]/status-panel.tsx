@@ -31,7 +31,7 @@ export function PrivateLinkBox({
       <code className="truncate rounded-full bg-white px-3 py-1 font-mono text-xs/7 text-mist-600 inset-ring-1 inset-ring-black/10 dark:bg-white/10 dark:text-mist-300 dark:inset-ring-white/10">
         {privateUrl}
       </code>
-      <CopyButton text={privateUrl} label="Copy private link" copiedLabel="Link copied" variant="solid" />
+      <CopyButton text={privateUrl} label="Copy private link" copiedLabel="Link copied" variant="accent" />
     </div>
   )
 }
