@@ -1,6 +1,7 @@
 import { config } from '@/lib/config'
+import { normaliseEmail } from '@/lib/crypto'
 import { clientKey, json, RADAR_COOKIE, rateLimit, withErrors } from '@/lib/http'
-import { createRadar, findRadarByToken } from '@/lib/radars'
+import { createRadar, findRadarByToken, reusableRadar, setRadarEmail } from '@/lib/radars'
 import { tick } from '@/lib/scheduler'
 import { isValidTimeZone } from '@/lib/time'
 import { createToken, hashToken } from '@/lib/tokens'
@@ -8,41 +9,47 @@ import { normaliseWebsite } from '@/lib/url'
 import { cookies } from 'next/headers'
 import { after } from 'next/server'
 
+/**
+ * Creates the radar and starts research. On the home page this is the email step: the website step only
+ * validates (/api/radars/check). Without an email in the request, the email this browser already gave is used
+ * (for example "Search this page" inside a radar); if there is none, the request is refused.
+ */
 export const POST = withErrors(async function postHandler(request: Request) {
   const body = await request.json().catch(() => null)
   const website = normaliseWebsite(body?.website)
   if (!website.ok) return json({ error: website.error, field: 'website' }, { status: 422 })
 
   const cookieStore = await cookies()
+  const cookieToken = cookieStore.get(RADAR_COOKIE)?.value
+  const existing = await findRadarByToken(cookieToken)
 
-  // Same-session resubmission of the same website reuses the existing radar; its deadline is never reset.
-  // A different URL on the same domain is allowed only as a correction when the first page couldn't be read.
-  const existing = await findRadarByToken(cookieStore.get(RADAR_COOKIE)?.value)
-  if (existing && (existing.website === website.url || (existing.website_host === website.host && existing.profile))) {
-    return json({ token: cookieStore.get(RADAR_COOKIE)!.value, reused: true, hasEmail: Boolean(existing.email) })
+  let email: string | null = null
+  if (body?.email !== undefined && body?.email !== null && body?.email !== '') {
+    const parsed = normaliseEmail(body.email)
+    if (!parsed.ok) return json({ error: parsed.error, field: 'email' }, { status: 422 })
+    email = parsed.email
+  } else if (existing?.email && !existing.email_unsubscribed_at) {
+    email = existing.email
+  }
+
+  const reuse = reusableRadar(existing, website)
+  if (reuse && cookieToken) {
+    if (email && reuse.email !== email) await setRadarEmail(reuse.id, email, cookieToken)
+    return json({ token: cookieToken, reused: true })
+  }
+
+  if (!email) {
+    return json({ error: 'Enter the email address where we should send your leads.', field: 'email' }, { status: 422 })
   }
 
   if (!rateLimit(`create:${clientKey(request)}`, config.createRateLimitPerHour)) {
-    return json(
-      { error: 'Too many new searches from this browser. Please try again later.', field: 'website' },
-      { status: 429 },
-    )
+    return json({ error: 'Too many new searches from this browser. Please try again later.', field: 'email' }, { status: 429 })
   }
 
   const timezone = isValidTimeZone(body?.timezone) ? body.timezone : null
-  const token = createToken()
   const language = typeof body?.language === 'string' ? body.language.slice(0, 35) : null
-  // A second website from the same browser reuses the email already given, unless they unsubscribed.
-  const carriedEmail = existing?.email && !existing.email_unsubscribed_at ? existing.email : null
-  await createRadar({
-    tokenHash: hashToken(token),
-    website: website.url,
-    host: website.host,
-    timezone,
-    language,
-    email: carriedEmail,
-    token,
-  })
+  const token = createToken()
+  await createRadar({ tokenHash: hashToken(token), website: website.url, host: website.host, timezone, language, email, token })
 
   cookieStore.set(RADAR_COOKIE, token, {
     httpOnly: true,
@@ -55,5 +62,5 @@ export const POST = withErrors(async function postHandler(request: Request) {
   // Start the research job right away; the scheduled task picks it up if this is interrupted.
   after(() => tick().catch((error) => console.error('tick failed', (error as Error).message)))
 
-  return json({ token, hasEmail: Boolean(carriedEmail) }, { status: 201 })
+  return json({ token }, { status: 201 })
 })

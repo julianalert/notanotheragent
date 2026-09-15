@@ -1,11 +1,10 @@
 'use client'
 
-import { Button, PlainButton } from '@/components/elements/button'
-import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
+import { Button } from '@/components/elements/button'
 import { clsx } from 'clsx/lite'
 import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
-import { createRadar, displayHost } from '@/lib/client/radar-forms'
+import { checkWebsite } from '@/lib/client/radar-forms'
 import { EmailForm } from './email-form'
 
 export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
@@ -14,8 +13,8 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
   const [value, setValue] = useState(defaultValue)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
-  // Step 2: the radar exists and research has started; ask where to send results before opening the page.
-  const [started, setStarted] = useState<{ token: string; host: string } | null>(null)
+  // Step 2: the website is valid; research starts only once the visitor gives an email.
+  const [started, setStarted] = useState<{ website: string; host: string } | null>(null)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -26,41 +25,27 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
     }
     setPending(true)
     setError(null)
-    const result = await createRadar(value)
+    const result = await checkWebsite(value)
     if (!result.ok) {
       setError(result.error)
       setPending(false)
       return
     }
-    if (result.hasEmail) {
-      router.push(`/r/${result.token}`)
+    if (result.existingToken) {
+      router.push(`/r/${result.existingToken}`)
       return
     }
-    setStarted({ token: result.token, host: displayHost(value) })
+    setStarted({ website: value, host: result.host })
     setPending(false)
   }
 
   if (started) {
     return (
       <div className="flex w-full max-w-lg flex-col gap-3">
-        <p className="flex items-start gap-2 px-1 text-sm/7 text-mist-950 dark:text-white" role="status">
-          <span className="mt-1 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-mist-950 text-white dark:bg-white dark:text-mist-950">
-            <CheckmarkIcon className="size-2.5 stroke-2" />
-          </span>
-          <span>
-            Research started for <span className="font-medium">{started.host}</span>. Where should we send your leads?
-          </span>
+        <p className="px-1 text-sm/7 text-mist-950 dark:text-white" role="status">
+          💌 Where should we send your leads?
         </p>
-        <EmailForm token={started.token} onSaved={() => router.push(`/r/${started.token}`)} />
-        <PlainButton
-          onClick={() => {
-            setStarted(null)
-            setValue('')
-          }}
-          className="self-start"
-        >
-          Wrong website? Start over
-        </PlainButton>
+        <EmailForm website={started.website} onCreated={(token) => router.push(`/r/${token}`)} />
       </div>
     )
   }
@@ -95,7 +80,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
           className="min-w-0 flex-1 bg-transparent px-4 text-base/7 text-mist-950 placeholder:text-mist-500 focus:outline-hidden sm:text-sm/7 dark:text-white"
         />
         <Button type="submit" size="lg" color="accent" disabled={pending} aria-disabled={pending} className="disabled:opacity-70">
-          {pending ? 'Starting…' : 'Find my first leads'}
+          {pending ? 'Checking…' : 'Find my first leads'}
         </Button>
       </div>
       {error && (

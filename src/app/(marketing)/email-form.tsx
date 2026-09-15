@@ -1,18 +1,18 @@
 'use client'
 
 import { Button } from '@/components/elements/button'
-import { saveEmail } from '@/lib/client/radar-forms'
+import { createRadar } from '@/lib/client/radar-forms'
 import { clsx } from 'clsx/lite'
 import { useId, useState, type FormEvent } from 'react'
 
-/** Step 2: where to send leads. Research is already running while the visitor types. */
+/** Step 2: where to send leads. Submitting creates the radar and starts the research. */
 export function EmailForm({
-  token,
-  onSaved,
+  website,
+  onCreated,
   className,
 }: {
-  token: string
-  onSaved: () => void
+  website: string
+  onCreated: (token: string) => void
   className?: string
 }) {
   const id = useId()
@@ -29,13 +29,13 @@ export function EmailForm({
     }
     setPending(true)
     setError(null)
-    const result = await saveEmail(token, value)
+    const result = await createRadar(website, value)
     if (!result.ok) {
       setError(result.error)
       setPending(false)
       return
     }
-    onSaved()
+    onCreated(result.token)
   }
 
   return (
@@ -69,7 +69,7 @@ export function EmailForm({
           className="min-w-0 flex-1 bg-transparent px-4 text-base/7 text-mist-950 placeholder:text-mist-500 focus:outline-hidden sm:text-sm/7 dark:text-white"
         />
         <Button type="submit" size="lg" color="accent" disabled={pending} aria-disabled={pending} className="disabled:opacity-70">
-          {pending ? 'Saving…' : 'Send me my leads'}
+          {pending ? 'Starting…' : 'Send me my leads'}
         </Button>
       </div>
       {error && (
@@ -78,7 +78,7 @@ export function EmailForm({
         </p>
       )}
       <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
-        We’ll email your best matches every morning for 14 days. Unsubscribe anytime.
+        🔥 We’ll email your best matches every morning for 14 days. Unsubscribe anytime.
       </p>
     </form>
   )

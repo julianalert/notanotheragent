@@ -353,3 +353,13 @@ export async function unsubscribeRadar(radarId: string) {
   )
   return rows[0] ?? null
 }
+
+/**
+ * Same-session resubmission of the same website reuses the existing radar; its deadline is never reset.
+ * A different URL on the same domain is allowed only as a correction when the first page couldn't be read.
+ */
+export function reusableRadar(existing: RadarRow | null, website: { url: string; host: string }) {
+  return existing && (existing.website === website.url || (existing.website_host === website.host && existing.profile))
+    ? existing
+    : null
+}

@@ -1,23 +1,47 @@
 /** Browser-side calls shared by the marketing forms and the desk. */
 
-export type CreateRadarResult = { ok: true; token: string; hasEmail: boolean } | { ok: false; error: string }
+export type CheckWebsiteResult = { ok: true; host: string; existingToken: string | null } | { ok: false; error: string }
 
-export async function createRadar(website: string): Promise<CreateRadarResult> {
+/** Home step 1: validates the website without starting research. */
+export async function checkWebsite(website: string): Promise<CheckWebsiteResult> {
+  try {
+    const response = await fetch('/api/radars/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ website }),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) return { ok: false, error: body.error ?? 'Something went wrong. Please try again.' }
+    return { ok: true, host: body.host, existingToken: body.existingToken ?? null }
+  } catch {
+    return { ok: false, error: 'We could not reach the server. Check your connection and try again.' }
+  }
+}
+
+export type CreateRadarResult =
+  | { ok: true; token: string }
+  | { ok: false; error: string; field: 'website' | 'email' | null }
+
+/** Creates the radar and starts research. `email` may be omitted when this browser already gave one. */
+export async function createRadar(website: string, email?: string): Promise<CreateRadarResult> {
   try {
     const response = await fetch('/api/radars', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         website,
+        email,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         language: navigator.language,
       }),
     })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok || !body.token) return { ok: false, error: body.error ?? 'Something went wrong. Please try again.' }
-    return { ok: true, token: body.token, hasEmail: Boolean(body.hasEmail) }
+    if (!response.ok || !body.token) {
+      return { ok: false, error: body.error ?? 'Something went wrong. Please try again.', field: body.field ?? null }
+    }
+    return { ok: true, token: body.token }
   } catch {
-    return { ok: false, error: 'We could not reach the server. Check your connection and try again.' }
+    return { ok: false, error: 'We could not reach the server. Check your connection and try again.', field: null }
   }
 }
 

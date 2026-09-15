@@ -4,7 +4,7 @@ import { createRadar, saveEmail } from '@/lib/client/radar-forms'
 import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
 
-/** Research another (or a more specific) page. Asks for an email next only if this browser has none on file. */
+/** Research another (or a more specific) page, emailing results to the address this browser already gave. */
 export function DeskWebsiteForm({ placeholder = 'youragency.com/services', cta = 'Search this page' }: { placeholder?: string; cta?: string }) {
   const router = useRouter()
   const id = useId()
@@ -20,7 +20,7 @@ export function DeskWebsiteForm({ placeholder = 'youragency.com/services', cta =
     setError(null)
     const result = await createRadar(value)
     if (!result.ok) {
-      setError(result.error)
+      setError(result.field === 'email' ? 'Start a new search from the home page to add where we should email your leads.' : result.error)
       setPending(false)
       return
     }

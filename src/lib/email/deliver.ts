@@ -2,7 +2,7 @@ import 'server-only'
 import { decryptToken, unsubscribeCode } from '../crypto'
 import { query } from '../db'
 import type { LeadT, RunOutcome } from '../research/contract'
-import { sendEmail } from './resend'
+import { emailConfigured, sendEmail } from './resend'
 import { renderRunEmail } from './templates'
 
 const MAX_ATTEMPTS = 3
@@ -39,6 +39,10 @@ type ClaimedRun = {
  * Runs wait while the visitor hasn't given an email yet (up to 3 days), and are skipped after unsubscribing.
  */
 export async function sendPendingEmails() {
+  // A non-Vercel server sharing a real database (e.g. localhost on production Supabase) leaves emails to production:
+  // without Resend it would mark previews as sent, and without an explicit APP_URL its links would point at localhost.
+  if (process.env.DATABASE_URL && !process.env.VERCEL && (!emailConfigured() || !process.env.APP_URL)) return
+
   await query(
     `update research_runs rr set email_status = 'skipped', email_error = 'unsubscribed or no email within 3 days'
      from radars r

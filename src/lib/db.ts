@@ -187,7 +187,8 @@ async function createDatabase(): Promise<Database> {
   }
 
   // The embedded database writes to local disk: development only. Serverless filesystems are read-only.
-  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+  // ALLOW_EMBEDDED_DB=1 lets a local `next start` use PGlite for testing; it is never honoured on Vercel.
+  if (process.env.VERCEL || (process.env.NODE_ENV === 'production' && process.env.ALLOW_EMBEDDED_DB !== '1')) {
     throw new Error(
       'DATABASE_URL is not set. Production needs a Postgres connection string (e.g. Supabase → Project Settings → Database → Connection string).',
     )
