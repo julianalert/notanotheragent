@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 export function Logo() {
   return (
-    <span className="inline-flex items-center gap-2 text-mist-950 dark:text-white">
+    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-mist-950 dark:text-white">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="size-6" aria-hidden="true">
         <circle cx="12" cy="12" r="9.25" />
         <circle cx="12" cy="12" r="5.25" strokeOpacity={0.5} />

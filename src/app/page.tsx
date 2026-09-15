@@ -30,9 +30,15 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
       <SiteNavbar
         links={
           <>
-            <NavbarLink href="#how-it-works">How it works</NavbarLink>
-            <NavbarLink href="#every-lead">What you get</NavbarLink>
-            <NavbarLink href="#faq">Questions</NavbarLink>
+            <NavbarLink href="#how-it-works" className="whitespace-nowrap">
+              How it works
+            </NavbarLink>
+            <NavbarLink href="#every-lead" className="whitespace-nowrap">
+              What you get
+            </NavbarLink>
+            <NavbarLink href="#faq" className="whitespace-nowrap">
+              Questions
+            </NavbarLink>
           </>
         }
         actions={
