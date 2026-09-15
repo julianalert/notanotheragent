@@ -62,7 +62,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   }, [api])
 
   const initialStatus = view.initialRun?.status
-  const busy = isInProgress(initialStatus) || isInProgress(view.latestDailyRun?.status)
+  const busy = isInProgress(initialStatus) || isInProgress(view.latestDailyRun?.status) || isInProgress(view.followUpRun?.status)
 
   // Poll saved state. Fast while research runs; slow otherwise so morning results still appear.
   useEffect(() => {
@@ -307,14 +307,32 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   else title = `${countWord(counts.today)} strong match${counts.today === 1 ? '' : 'es'} ${foundToday ? 'today' : 'to review'}`
 
   const showFocus = view.focus && (screen === 'leads' || screen === 'empty')
-  const lastRunWithCandidates = [view.latestDailyRun, view.initialRun].find((item) => item?.status === 'completed' && item.candidates)
-  const publishedInThatRun = lastRunWithCandidates ? view.leads.filter((lead) => lead.runId === lastRunWithCandidates.id).length : 0
+  const lastRunWithCandidates = [view.followUpRun, view.latestDailyRun, view.initialRun]
+    .filter((item) => item?.status === 'completed' && item.candidates)
+    .sort((a, b) => Date.parse(b!.createdAt) - Date.parse(a!.createdAt))[0]
+  // A follow-up continues the search before it, so report both together.
+  const searchRuns = lastRunWithCandidates
+    ? lastRunWithCandidates.kind === 'follow_up'
+      ? [
+          lastRunWithCandidates,
+          ...[view.latestDailyRun, view.initialRun]
+            .filter((item) => item?.status === 'completed' && Date.parse(item.createdAt) < Date.parse(lastRunWithCandidates.createdAt))
+            .sort((a, b) => Date.parse(b!.createdAt) - Date.parse(a!.createdAt))
+            .slice(0, 1),
+        ]
+      : [lastRunWithCandidates]
+    : []
+  const searchRunIds = new Set(searchRuns.map((item) => item!.id))
+  const publishedInThatRun = view.leads.filter((lead) => searchRunIds.has(lead.runId)).length
+  const candidatesInThatRun = searchRuns.reduce((sum, item) => sum + (item!.candidates ?? 0), 0)
   const daily = view.latestDailyRun
-  const dailyNote = daily?.retrying
-    ? 'Today’s search is delayed. We’re retrying.'
-    : isInProgress(daily?.status)
-      ? 'Today’s search is in progress'
-      : null
+  const dailyNote = isInProgress(view.followUpRun?.status)
+    ? 'Checking more angles for new leads'
+    : daily?.retrying
+      ? 'Today’s search is delayed. We’re retrying.'
+      : isInProgress(daily?.status)
+        ? 'Today’s search is in progress'
+        : null
 
   const groups = useMemo(() => {
     if (deskView !== 'today') return [{ key: deskView, label: deskView === 'contacted' ? 'Contacted' : 'Dismissed', leads: rows }]
@@ -408,7 +426,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                       <>
                         <span className="sep" aria-hidden="true" />
                         <span>
-                          <b>{publishedInThatRun}</b> of {lastRunWithCandidates.candidates} findings cleared the evidence check
+                          <b>{publishedInThatRun}</b> of {candidatesInThatRun} findings cleared the evidence check
                         </span>
                       </>
                     )}

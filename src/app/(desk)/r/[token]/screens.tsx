@@ -136,13 +136,30 @@ export function Searching({
 /* ------------------------------ No results ------------------------------ */
 
 const EMPTY_COPY: Record<string, { title: string; body: string }> = {
+  no_candidates: {
+    title: 'No promising posts found yet',
+    body: 'We searched public sources for people describing the problems you solve, and nothing close enough came up in this window.',
+  },
+  candidates_rejected: {
+    title: 'Nothing passed the evidence check',
+    body: 'We found possible matches, but each one was a seller, the wrong kind of buyer, closed, too old or outside what you offer. The list stays empty instead of filling up with guesses.',
+  },
+  candidates_unresolved: {
+    title: 'Possible matches are waiting on verification',
+    body: 'We found posts that could fit, but couldn’t confirm their date, author or source. We don’t show leads we can’t back up.',
+  },
+  research_incomplete: {
+    title: 'This search didn’t finish cleanly',
+    body: 'Too many sources were blocked or unavailable, so the search was incomplete. This is not the same as “no demand”; the next search tries again.',
+  },
+  // research-v1 outcomes
   no_matches: {
     title: 'Nothing passed the evidence check',
     body: 'We searched public sources. Nothing we found could be tied to a real, dated post that matches what you sell, so the list stays empty instead of filling up with guesses.',
   },
   insufficient_coverage: {
     title: 'We couldn’t reach enough sources',
-    body: 'Too many of the sources we needed were blocked or unavailable, so this search was incomplete. The list stays empty rather than filling up with guesses.',
+    body: 'Too many of the sources we needed were blocked or unavailable, so this search was incomplete.',
   },
   validation_failed: {
     title: 'Nothing passed the evidence check',
@@ -151,12 +168,23 @@ const EMPTY_COPY: Record<string, { title: string; body: string }> = {
 }
 
 export function NoResults({ view }: { view: RadarView }) {
-  const copy = EMPTY_COPY[view.initialRun?.outcome ?? 'no_matches'] ?? EMPTY_COPY.no_matches
+  const followUp = view.followUpRun
+  const followUpRunning = followUp && ['queued', 'running', 'processing'].includes(followUp.status)
+  const latest = followUp?.status === 'completed' ? followUp : view.initialRun
+  const copy = EMPTY_COPY[latest?.outcome ?? 'no_candidates'] ?? EMPTY_COPY.no_candidates
   return (
     <div className="blank">
-      <h2>{copy.title}</h2>
-      <p>{copy.body}</p>
-      {!view.expired && (
+      <h2>{followUpRunning ? 'Checking more angles' : copy.title}</h2>
+      {followUpRunning ? (
+        <p>
+          The first search didn’t find enough verified leads, so we’re running one more search with different angles
+          {view.initialRun?.unresolved ? ' and checking the possible matches we couldn’t verify' : ''}. This page updates
+          when it’s done.
+        </p>
+      ) : (
+        <p>{copy.body}</p>
+      )}
+      {!view.expired && !followUpRunning && (
         <p>
           We run again every morning for the rest of your free period
           {view.emailUnsubscribed ? ' and add anything that qualifies here.' : ' and email you as soon as something qualifies.'}

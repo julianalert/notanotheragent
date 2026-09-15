@@ -27,7 +27,7 @@ create table if not exists public.radars (
 create table if not exists public.research_runs (
   id uuid primary key default gen_random_uuid(),
   radar_id uuid not null references public.radars(id) on delete cascade,
-  kind text not null check (kind in ('initial', 'daily')),
+  kind text not null check (kind in ('initial', 'daily', 'follow_up')),
   run_key text not null,
   status text not null check (status in ('queued', 'running', 'processing', 'completed', 'failed', 'cancelled')),
   provider text,
@@ -45,7 +45,9 @@ create table if not exists public.research_runs (
   manual_retry_count integer not null default 0,
   error_code text,
   error text,
-  outcome text check (outcome in ('matches', 'no_matches', 'website_unreadable', 'unsupported_business', 'insufficient_coverage', 'validation_failed')),
+  outcome text check (outcome in ('qualified_results', 'candidates_unresolved', 'candidates_rejected', 'no_candidates', 'research_incomplete', 'website_unreadable', 'unsupported_business', 'matches', 'no_matches', 'insufficient_coverage', 'validation_failed')),
+  parent_run_id uuid references public.research_runs(id) on delete cascade,
+  diagnostics jsonb, -- internal only: brief, proposed vs executed searches, counts, access failures, follow-up
   usage jsonb,
   cost_usd numeric(10, 4),
   duration_ms integer,
@@ -89,6 +91,25 @@ create table if not exists public.leads (
 
 create index if not exists leads_radar_idx on public.leads (radar_id, discovered_at desc);
 
+create table if not exists public.research_candidates (
+  id uuid primary key default gen_random_uuid(),
+  run_id uuid not null references public.research_runs(id) on delete cascade,
+  radar_id uuid not null references public.radars(id) on delete cascade,
+  source_url text not null,
+  source_key text,
+  headline text not null,
+  decision text not null check (decision in ('published', 'qualified_not_selected', 'unresolved', 'rejected')),
+  model_decision text not null,
+  reasons jsonb not null default '[]',
+  date_status text not null,
+  published_date date,
+  score_total integer not null default 0,
+  data jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists research_candidates_run_idx on public.research_candidates (run_id);
+create index if not exists research_candidates_radar_idx on public.research_candidates (radar_id, decision);
+
 create table if not exists public.evaluation_reviews (
   id uuid primary key default gen_random_uuid(),
   run_id uuid not null references public.research_runs(id) on delete cascade,
@@ -109,8 +130,9 @@ alter table public.radars enable row level security;
 alter table public.research_runs enable row level security;
 alter table public.leads enable row level security;
 alter table public.evaluation_reviews enable row level security;
+alter table public.research_candidates enable row level security;
 
-revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews from anon, authenticated;
+revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates from anon, authenticated;
 
 -- Useful pilot queries (spec §2.3):
 --   Cost and time per run:

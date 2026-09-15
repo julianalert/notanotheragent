@@ -23,7 +23,8 @@ function log(event: string, details: Record<string, unknown>) {
 type ClaimedRun = {
   id: string
   radar_id: string
-  kind: 'initial' | 'daily'
+  kind: 'initial' | 'daily' | 'follow_up'
+  parent_kind: 'initial' | 'daily' | null
   outcome: RunOutcome
   email_attempts: number
   email: string
@@ -65,6 +66,7 @@ export async function sendPendingEmails() {
          for update of rr2 skip locked
        ) and r.id = rr.radar_id
        returning rr.id, rr.radar_id, rr.kind, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext,
+         (select p.kind from research_runs p where p.id = rr.parent_run_id) as parent_kind,
          r.website_host, r.profile->>'name' as business_name, r.research_ends_at`,
     )
     if (!run) break
@@ -88,8 +90,18 @@ async function deliver(run: ClaimedRun) {
   const unsubscribeUrl = `${appUrl()}/api/unsubscribe/${unsubscribeCode(run.radar_id)}`
   const daysLeft = Math.max(0, Math.ceil((new Date(run.research_ends_at).getTime() - Date.now()) / 86_400_000))
 
+  // A follow-up after the initial run sends the "first results" email that the initial run deferred.
+  const emailKind = run.kind === 'follow_up' ? (run.parent_kind ?? 'daily') : run.kind
+  if (run.kind === 'follow_up' && emailKind === 'initial') {
+    const all = await query<{ id: string; data: LeadT }>(
+      `select id, data from leads where radar_id = $1 and held_reason is null order by score_total desc, published_date desc limit 10`,
+      [run.radar_id],
+    )
+    leads.splice(0, leads.length, ...all)
+  }
+
   const email = renderRunEmail({
-    kind: run.kind,
+    kind: emailKind,
     outcome: run.outcome,
     websiteHost: run.website_host,
     businessName: run.business_name,

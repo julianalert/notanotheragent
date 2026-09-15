@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'timed_out' // wall deadline reached and cancelled: one retry
   | 'provider_failed' // other terminal provider failure
   | 'invalid_output' // unparseable even after the one formatting repair
+  | 'profile_unverified' // research ran but the offer could not be verified on the website; user may retry
 
 const RETRYABLE: ErrorCode[] = ['provider_transient', 'no_search_activity', 'incomplete', 'timed_out']
 export const isRetryable = (code: ErrorCode) => RETRYABLE.includes(code)
@@ -34,9 +35,12 @@ export type Usage = {
   web_search_calls: number
 }
 
+/** Tool activity as exposed by the Responses API: what was actually searched and opened. */
+export type ToolAction = { type: string; query: string | null; url: string | null; status: string | null }
+
 export type Inspection =
   | { state: 'pending' }
-  | { state: 'completed'; text: string; auditUrls: string[]; usage: Usage; raw: unknown }
+  | { state: 'completed'; text: string; auditUrls: string[]; actions: ToolAction[]; usage: Usage; raw: unknown }
   | { state: 'failed'; code: ErrorCode; message: string; usage?: Usage; raw?: unknown }
 
 export interface ResearchProvider {
@@ -90,19 +94,26 @@ function classifyCreateError(error: unknown): ResearchError {
 type OutputItem = {
   type: string
   status?: string
-  action?: { type?: string; url?: string; sources?: Array<{ url?: string }> }
+  action?: { type?: string; url?: string; query?: string; queries?: string[]; sources?: Array<{ url?: string }> }
   content?: Array<{ type: string; text?: string; refusal?: string; annotations?: Array<{ type: string; url?: string }> }>
 }
 
 /** Collect consulted URLs: search sources, opened pages and final citations (spec §1.6.2). */
 export function auditFromOutput(output: OutputItem[]) {
   const urls = new Set<string>()
+  const actions: ToolAction[] = []
   let searchCalls = 0
   let refusal: string | null = null
   let text = ''
   for (const item of output) {
     if (item.type === 'web_search_call') {
       if (item.status === 'completed') searchCalls++
+      actions.push({
+        type: item.action?.type ?? 'unknown',
+        query: item.action?.query ?? item.action?.queries?.join(' | ') ?? null,
+        url: item.action?.url ?? null,
+        status: item.status ?? null,
+      })
       if (item.action?.url) urls.add(item.action.url)
       for (const source of item.action?.sources ?? []) if (source.url) urls.add(source.url)
     }
@@ -116,7 +127,7 @@ export function auditFromOutput(output: OutputItem[]) {
       }
     }
   }
-  return { urls: [...urls], searchCalls, refusal, text }
+  return { urls: [...urls], actions, searchCalls, refusal, text }
 }
 
 function openAIProvider(): ResearchProvider {
@@ -169,7 +180,7 @@ function openAIProvider(): ResearchProvider {
         if (audit.searchCalls === 0) {
           return { state: 'failed', code: 'no_search_activity', message: 'No successful web search activity', usage, raw }
         }
-        return { state: 'completed', text: audit.text, auditUrls: audit.urls, usage, raw }
+        return { state: 'completed', text: audit.text, auditUrls: audit.urls, actions: audit.actions, usage, raw }
       }
       if (response.status === 'incomplete') {
         return {

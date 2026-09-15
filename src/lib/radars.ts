@@ -28,8 +28,9 @@ export type RadarRow = {
 export type RunRow = {
   id: string
   radar_id: string
-  kind: 'initial' | 'daily'
+  kind: 'initial' | 'daily' | 'follow_up'
   run_key: string
+  parent_run_id: string | null
   status: 'queued' | 'running' | 'processing' | 'completed' | 'failed' | 'cancelled'
   provider_response_id: string | null
   published_on_or_after: Date | string | null
@@ -42,6 +43,8 @@ export type RunRow = {
   outcome: RunOutcome | null
   coverage: { limitations: string[] } | null
   candidates: number | null
+  published_count: number | null
+  unresolved_count: number | null
   created_at: Date
 }
 
@@ -57,7 +60,7 @@ type LeadRow = {
 
 export type RunView = {
   id: string
-  kind: 'initial' | 'daily'
+  kind: 'initial' | 'daily' | 'follow_up'
   status: RunRow['status']
   outcome: RunOutcome | null
   errorCode: string | null
@@ -68,8 +71,10 @@ export type RunView = {
   completedAt: string | null
   runKey: string
   limitations: string[]
-  /** Candidates the research returned before the evidence gates (null for runs without a report). */
+  /** Candidates the research returned before the evidence checks (null for runs without a report). */
   candidates: number | null
+  published: number | null
+  unresolved: number | null
 }
 
 export type LeadView = {
@@ -98,6 +103,8 @@ export type RadarView = {
   focusSelection: Focus | null
   initialRun: RunView | null
   latestDailyRun: RunView | null
+  /** The single follow-up of the most recent run that had one. */
+  followUpRun: RunView | null
   lastResearchAt: string | null
   leads: LeadView[]
   slowRunThresholdMs: number
@@ -185,6 +192,8 @@ function toRunView(run: RunRow | undefined, expired: boolean): RunView | null {
     runKey: run.run_key,
     limitations: run.coverage?.limitations ?? [],
     candidates: run.candidates,
+    published: run.published_count,
+    unresolved: run.unresolved_count,
   }
 }
 
@@ -200,9 +209,11 @@ const values = (facts: { value: string }[] | undefined, max = 3) =>
 export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   const [runs, leads] = await Promise.all([
     query<RunRow>(
-      `select id, radar_id, kind, run_key, status, provider_response_id, published_on_or_after, scheduled_at, started_at,
-         completed_at, retry_count, manual_retry_count, error_code, outcome, coverage, created_at,
-         (validation_report->>'returned_leads')::int as candidates
+      `select id, radar_id, kind, run_key, parent_run_id, status, provider_response_id, published_on_or_after, scheduled_at,
+         started_at, completed_at, retry_count, manual_retry_count, error_code, outcome, coverage, created_at,
+         coalesce((diagnostics->'counts'->>'discovered')::int, (validation_report->>'returned_leads')::int) as candidates,
+         (diagnostics->'counts'->>'published')::int as published_count,
+         (diagnostics->'counts'->>'unresolved')::int as unresolved_count
        from research_runs where radar_id = $1 order by created_at desc`,
       [radar.id],
     ),
@@ -249,6 +260,10 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     ),
     latestDailyRun: toRunView(
       runs.find((run) => run.kind === 'daily'),
+      expired,
+    ),
+    followUpRun: toRunView(
+      runs.find((run) => run.kind === 'follow_up'),
       expired,
     ),
     lastResearchAt: iso(lastCompleted?.completed_at),

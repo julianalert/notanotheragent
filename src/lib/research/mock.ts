@@ -1,16 +1,16 @@
-import type { EvidenceT, LeadT, ResearchResultT } from './contract'
+import type { CandidateT, EvidenceT, ResearchResultT } from './contract'
 import type { Inspection, ResearchProvider } from './provider'
 import type { ResearchInput } from './prompt'
 
 /*
- * Development-only provider. Produces clearly labelled sample output that exercises the real gates:
- * it includes candidates that must be rejected (stale, not in the tool audit) alongside passing ones.
+ * Development-only provider. Produces clearly labelled sample output that exercises the real gates: a mixed pool
+ * of qualified, unresolved (undated, not in audit) and rejected (seller, stale) candidates, and a follow-up.
  */
 
 const DURATION_MS = 15_000
 const DAY_MS = 86_400_000
 
-type Payload = { mode: 'initial' | 'daily'; website: string; after: string; excluded: number; focus: string[] }
+type Payload = { mode: ResearchInput['mode']; website: string; excluded: number; focus: string[] }
 
 export const mockProvider: ResearchProvider = {
   name: 'mock',
@@ -22,7 +22,6 @@ export const mockProvider: ResearchProvider = {
     const payload: Payload = {
       mode: input.mode,
       website: input.website_url,
-      after: input.published_on_or_after,
       excluded: input.excluded_opportunities.length,
       focus: focusLine ? focusLine.split('; ') : [],
     }
@@ -38,6 +37,7 @@ export const mockProvider: ResearchProvider = {
       state: 'completed',
       text: JSON.stringify(result),
       auditUrls,
+      actions: result.search_plan.proposed_queries.map((query) => ({ type: 'search', query, url: null, status: 'completed' })),
       usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 8 },
       raw: { mock: true },
     }
@@ -66,10 +66,13 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
   const services = ['Website design', 'Conversion rate optimisation']
   const auditUrls = [payload.website, `${website.origin}/services`]
 
-  const lead = (index: number, publishedOffset: number, options: { inAudit?: boolean } = {}): LeadT => {
+  const candidate = (
+    index: number,
+    options: { published: string | null; decision?: CandidateT['decision']; reasons?: string[]; inAudit?: boolean },
+  ): CandidateT => {
     const [need, intent] = NEEDS[index % NEEDS.length]
     const handle = `@sample_${seed.toString(36)}_${index}`
-    const source = `https://example.com/sample/${seed.toString(36)}/${index}`
+    const source = `https://example.com/sample/${seed.toString(36)}/${index}?utm_source=mock`
     if (options.inAudit !== false) auditUrls.push(source)
     const evidence: EvidenceT[] = [
       {
@@ -88,12 +91,15 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
       public_handle: handle,
       role: null,
       company_website: null,
-      location: index % 2 ? 'Remote (EU)' : null,
+      location: null,
       identity_evidence_ids: ['e1'],
+      buyer_match: 'Sample data: the author runs a B2B SaaS team, which is the buyer described in the brief.',
       source_url: source,
       source_platform: index % 2 ? 'Reddit' : 'Indie Hackers',
-      published_date: day(publishedOffset),
-      date_evidence_ids: ['e1'],
+      published_date: options.published,
+      date_status: options.published ? 'exact' : 'unknown',
+      date_note: options.published ? null : 'The page does not show a publication date.',
+      date_evidence_ids: options.published ? ['e1'] : [],
       need_summary: `Sample data. ${need}.`,
       need_evidence_ids: ['e1'],
       intent,
@@ -111,19 +117,39 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
       score: { intent: intent === 'explicit_request' ? 3 : 2, service_fit: 3, freshness: 2, contactability: 2 },
       evidence,
       caveats: intent === 'stated_problem' ? ['Stated problem, not confirmed buying intent.'] : [],
+      decision: options.decision ?? 'qualified',
+      decision_reasons: options.reasons ?? [],
+      missing_info: options.published ? [] : ['publication date'],
+      access_limitations: [],
     }
   }
 
-  const leads =
-    payload.mode === 'initial'
-      ? [lead(0, 1), lead(1, 4), lead(2, 12), lead(3, 90), lead(4, 2, { inAudit: false })]
-      : [lead(payload.excluded + 2, 0)]
+  let candidates: CandidateT[]
+  if (payload.mode === 'initial') {
+    candidates = [
+      candidate(0, { published: day(1) }),
+      candidate(1, { published: day(4) }),
+      candidate(2, { published: null, decision: 'unresolved', reasons: ['publication date not shown'] }),
+      candidate(3, { published: day(90) }),
+      candidate(4, { published: day(2), inAudit: false }),
+      candidate(5, { published: day(3), decision: 'rejected', reasons: ['seller promoting their own services'] }),
+    ]
+  } else if (payload.mode === 'follow_up') {
+    candidates = [candidate(payload.excluded + 3, { published: day(2) })]
+  } else {
+    candidates = [candidate(payload.excluded + 2, { published: day(0) })]
+  }
+
+  const proposed =
+    payload.mode === 'follow_up'
+      ? ['sample follow-up: redesign agency recommendation', 'sample follow-up: demo form conversions dropped']
+      : ['sample: looking for a web design agency', 'sample: demo requests dropped after redesign', 'sample: webflow migration help']
 
   return {
     auditUrls,
     result: {
-      schema_version: '1',
-      outcome: 'matches',
+      schema_version: '2',
+      research_status: 'complete',
       profile: {
         name: `${website.hostname.replace(/^www\./, '')} (sample profile)`,
         website_url: payload.website,
@@ -136,12 +162,18 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
         proof_points: [],
         pricing: null,
         exclusions: ['Other agencies', 'Full-time hiring posts'],
-        search_angles: services.map((service) => ({
-          service,
-          buyer_problem: 'Website underperforms',
-          explicit_request_queries: [`"looking for" ${service.toLowerCase()} agency`],
-          stated_problem_queries: ['"our website" conversions dropped'],
-        })),
+        acquisition_brief: {
+          sells: 'Sample: website design and conversion optimisation for B2B SaaS teams.',
+          buyers: ['Heads of marketing and founders at B2B SaaS companies'],
+          recognise_buyer_in_posts: ['Mentions their SaaS product, trial, demo form or pricing page'],
+          buyer_problems_in_their_words: ['our demo form stopped converting', 'site redesign killed signups'],
+          trigger_situations: ['Recent relaunch or CMS migration', 'Upcoming funding round'],
+          explicit_requests: ['looking for a web design agency', 'recommend a CRO consultant'],
+          not_our_buyer: ['Other agencies selling design services', "The SaaS companies' own customers"],
+          buyer_seller_confusions: ['Agencies advertising redesigns look like requests but are sellers'],
+          geography: { value: 'Europe', basis: 'inferred' },
+          languages: { value: 'English', basis: 'stated' },
+        },
         evidence: [
           {
             id: 'p1',
@@ -154,12 +186,16 @@ function sample(payload: Payload, seed: number): { result: ResearchResultT; audi
         ],
         uncertainties: ['Sample data only'],
       },
-      leads,
+      search_plan: { angles: services, proposed_queries: proposed },
+      candidates,
+      follow_up:
+        payload.mode === 'initial'
+          ? { worthwhile: true, reason: 'Sample: one undated candidate to verify and an untried angle.', untried_angles: ['sample: founders asking for CRO audits'], candidates_to_verify: [candidates[2].source_url] }
+          : { worthwhile: false, reason: 'Sample: nothing further to try.', untried_angles: [], candidates_to_verify: [] },
       coverage: {
-        angles_attempted: services,
-        queries_reported: ['sample query 1', 'sample query 2'],
         limitations: ['Development mode sample data. Set OPENAI_API_KEY to run real research.'],
-        rejection_summary: [],
+        access_failures: payload.mode === 'initial' ? ['https://example.com/sample/blocked (sample: login required)'] : [],
+        rejection_summary: ['Sample: rejected a seller promotion.'],
       },
     },
   }

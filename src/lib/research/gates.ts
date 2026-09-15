@@ -1,10 +1,12 @@
 import { safeOutgoingUrl } from '../url'
-import type { BusinessProfileT, EvidenceT, Focus, LeadT } from './contract'
+import type { BusinessProfileT, CandidateT, EvidenceT, Focus, LeadT } from './contract'
 
 /*
- * Deterministic qualification gates (spec §1.6). These check structure, references, dates, audit
- * corroboration and thresholds. They cannot verify semantics: that remains the research model's source
- * inspection plus human sampling. Nothing here should be presented to users as independent verification.
+ * Deterministic qualification. The model proposes a decision for every candidate; these checks enforce what can
+ * be checked mechanically (URLs, references, dates, audit presence, documented services, duplicates) and sort each
+ * candidate into qualified, rejected or unresolved. Missing verification makes a candidate unresolved, not
+ * rejected; missing optional enrichment (name, website, budget, role, email) never blocks it. Scores only rank.
+ * Nothing here is independent verification of what a source says.
  */
 
 const DAY_MS = 86_400_000
@@ -136,7 +138,7 @@ export function similarity(a: Set<string>, b: Set<string>) {
   return shared / (a.size + b.size - shared)
 }
 
-export function identityKey(lead: Pick<LeadT, 'company_name' | 'public_handle' | 'person_name'>) {
+export function identityKey(lead: Pick<CandidateT, 'company_name' | 'public_handle' | 'person_name'>) {
   const raw = lead.company_name || lead.public_handle || lead.person_name || ''
   return norm(raw.replace(/^@/, ''))
 }
@@ -181,6 +183,7 @@ export function validateProfile(profile: BusinessProfileT | null, websiteUrl: st
   const evidence = new Map(profile.evidence.map((item) => [item.id, item]))
 
   if (!profile.services.length) reasons.push('profile has no services (empty offer)')
+  if (blank(profile.acquisition_brief?.sells)) reasons.push('acquisition brief does not say what the business sells')
   for (const service of profile.services) {
     if (blank(service.value)) reasons.push('blank service')
     if (!service.evidence_ids.length) reasons.push(`service "${service.value}" has no evidence`)
@@ -198,7 +201,7 @@ export function validateProfile(profile: BusinessProfileT | null, websiteUrl: st
   return { ok: reasons.length === 0, reasons }
 }
 
-/* --------------------------------- Leads ---------------------------------- */
+/* ------------------------------- Candidates ------------------------------- */
 
 export type PriorOpportunity = {
   sourceKey: string
@@ -215,21 +218,31 @@ export type GateContext = {
   prior: PriorOpportunity[]
 }
 
+export type Score = { intent: number; service_fit: number; freshness: number; contactability: number; total: number }
+
 export type QualifiedLead = {
   lead: LeadT
   sourceUrl: string
   sourceKey: string
   identityKey: string
   needText: string
-  score: { intent: number; service_fit: number; freshness: number; contactability: number; total: number }
-  heldReason: string | null
+  score: Score
 }
 
-export type RejectedLead = { headline: string; source_url: string; reasons: string[] }
+export type Decision = 'published' | 'qualified_not_selected' | 'unresolved' | 'rejected'
 
-function checkRefs(label: string, ids: string[], evidence: Map<string, EvidenceT>, reasons: string[], required = true) {
-  if (required && !ids.length) reasons.push(`${label}: no evidence reference`)
-  for (const id of ids) if (!evidence.has(id)) reasons.push(`${label}: reference ${id} does not resolve`)
+/** Every candidate with the application's final decision, for diagnostics. */
+export type CandidateOutcome = {
+  headline: string
+  source_url: string
+  source_key: string | null
+  decision: Decision
+  model_decision: CandidateT['decision']
+  reasons: string[]
+  date_status: CandidateT['date_status']
+  published_date: string | null
+  score: Score
+  candidate: CandidateT
 }
 
 function mentionedIn(name: string, items: EvidenceT[], extra: string[] = []) {
@@ -279,243 +292,312 @@ export function sameService(profileService: string, matched: string) {
  * documented services can match.
  */
 export function matchesServices(services: string[], matched: string) {
-  if (services.some((service) => sameService(service, matched))) return true
+  return serviceMatch(services, matched) === 'match'
+}
+
+/**
+ * match: one documented service, or a combination of them (at least 3 shared terms and 40% of the claim).
+ * unrelated: little or nothing in common with the documented services (reject).
+ * unclear: partly documented wording; a verification issue, not proof the service was invented.
+ */
+export function serviceMatch(services: string[], matched: string): 'match' | 'unclear' | 'unrelated' {
+  if (services.some((service) => sameService(service, matched))) return 'match'
   const claimed = serviceStems(matched)
-  if (claimed.size < 3) return false
+  if (!claimed.size) return 'unrelated'
   const documented = new Set(services.flatMap((service) => [...serviceStems(service)]))
   let shared = 0
   for (const stem of claimed) if (documented.has(stem)) shared++
-  return shared / claimed.size >= 0.6
+  const ratio = shared / claimed.size
+  if (shared >= 3 && ratio >= 0.4) return 'match'
+  return ratio >= 0.25 && shared >= 1 ? 'unclear' : 'unrelated'
 }
 
 export const DATE_FROM_SEARCH_CAVEAT = 'The publication date comes from search results for this post, not from the page itself.'
+export const RELATIVE_DATE_CAVEAT = 'The page shows a relative date; the publication date is approximate.'
 
 /**
- * Quote budget (spec §1.3): at most 25 quoted words per original source. Quotes proving the need are kept first;
- * other quotes that would exceed the budget lose their excerpt but keep their paraphrase and link. If the need
- * quotes alone exceed the budget, nothing is removed and the gate rejects the lead.
+ * Quote budget: at most 25 quoted words per original source. Need quotes are kept first; later quotes that would
+ * exceed the budget lose their excerpt but keep their paraphrase and link. A single need quote longer than the
+ * budget is cut at a word boundary with an ellipsis.
  */
-export function applyQuoteBudget(lead: LeadT): LeadT {
+export function applyQuoteBudget<T extends Pick<CandidateT, 'evidence' | 'need_evidence_ids'>>(lead: T): T {
   const needIds = new Set(lead.need_evidence_ids)
   const ordered = [...lead.evidence.filter((item) => needIds.has(item.id)), ...lead.evidence.filter((item) => !needIds.has(item.id))]
   const used = new Map<string, number>()
-  const trimmed = new Map<string, EvidenceT>()
+  const changed = new Map<string, EvidenceT>()
   for (const item of ordered) {
     const key = sourceKey(item.url.replace(/\.json(?=$|\?)/i, '')) ?? item.url
     const words = wordCount(item.excerpt)
-    const total = (used.get(key) ?? 0) + words
-    if (words > 0 && total > MAX_EXCERPT_WORDS_PER_SOURCE && !needIds.has(item.id)) {
-      trimmed.set(item.id, { ...item, excerpt: '' })
-      continue
+    if (!words) continue
+    const already = used.get(key) ?? 0
+    if (already + words <= MAX_EXCERPT_WORDS_PER_SOURCE) {
+      used.set(key, already + words)
+    } else if (already === 0 && needIds.has(item.id)) {
+      const cut = item.excerpt.trim().split(/\s+/).slice(0, MAX_EXCERPT_WORDS_PER_SOURCE).join(' ')
+      changed.set(item.id, { ...item, excerpt: `${cut}…` })
+      used.set(key, MAX_EXCERPT_WORDS_PER_SOURCE)
+    } else {
+      changed.set(item.id, { ...item, excerpt: '' })
     }
-    used.set(key, total)
   }
-  if (!trimmed.size) return lead
-  return { ...lead, evidence: lead.evidence.map((item) => trimmed.get(item.id) ?? item) }
+  if (!changed.size) return lead
+  return { ...lead, evidence: lead.evidence.map((item) => changed.get(item.id) ?? item) }
 }
 
-/** Per-lead hard gates. Returns reasons; empty means the lead passes. */
-export function leadGateReasons(lead: LeadT, ctx: GateContext, auditKeys: Set<string | null>) {
-  const reasons: string[] = []
+type Check = { rejected: string[]; unresolved: string[]; caveats: string[]; clean: CandidateT; sourceUrl: string | null; score: Score }
+
+/**
+ * Checks one candidate. Hard failures reject (invalid source, undocumented service, outside the window, closed,
+ * or a model rejection); verification gaps leave it unresolved (identity, date, evidence, audit, contact route).
+ */
+export function checkCandidate(original: CandidateT, ctx: GateContext, auditKeys: Set<string | null>): Check {
+  const rejected: string[] = []
+  const unresolved: string[] = []
+  const caveats: string[] = []
+
+  const normalisedDate = normalisePublishedDate(original.published_date)
+  let candidate: CandidateT = applyQuoteBudget({ ...original, published_date: normalisedDate })
+
   const evidence = new Map<string, EvidenceT>()
-  for (const item of lead.evidence) {
-    if (evidence.has(item.id)) reasons.push(`duplicate evidence id ${item.id}`)
+  for (const item of candidate.evidence) {
     evidence.set(item.id, item)
-    if (!safeOutgoingUrl(item.url)) reasons.push(`evidence ${item.id} has an invalid URL`)
+    if (!safeOutgoingUrl(item.url)) unresolved.push(`evidence ${item.id} has an invalid URL`)
   }
+  const resolves = (ids: string[]) => ids.length > 0 && ids.every((id) => evidence.has(id))
 
-  // Source URL: public, and actually consulted according to the tool audit.
-  const sourceUrl = safeOutgoingUrl(lead.source_url)
-  const sourceCanonical = sourceUrl ? canonicalUrl(sourceUrl) : null
-  if (!sourceUrl) reasons.push('source URL is not a public http(s) URL')
+  // Model decision first: its rejections stand; its unresolved candidates stay unresolved.
+  if (candidate.decision === 'rejected') rejected.push(...(candidate.decision_reasons.length ? candidate.decision_reasons : ['rejected by research']))
+  if (candidate.decision === 'unresolved') unresolved.push(...(candidate.decision_reasons.length ? candidate.decision_reasons : ['needs verification']))
+
+  // Source.
+  const sourceUrl = safeOutgoingUrl(candidate.source_url)
+  if (!sourceUrl) rejected.push('source URL is not a public http(s) URL')
   else if (!auditKeysFor(sourceUrl).some((key) => auditKeys.has(key))) {
-    reasons.push('source URL does not appear in the search tool audit')
+    unresolved.push('source not found in the search tool audit — needs verification')
   }
 
-  // Identity.
-  if (blank(lead.person_name) && blank(lead.company_name) && blank(lead.public_handle)) {
-    reasons.push('no identifiable person, company or handle')
+  // Identity: a public handle is enough; unsupported company or person names are removed, not fatal.
+  if (blank(candidate.person_name) && blank(candidate.company_name) && blank(candidate.public_handle)) {
+    unresolved.push('author identity not public')
   }
-  checkRefs('identity', lead.identity_evidence_ids, evidence, reasons)
-  const identityItems = lead.identity_evidence_ids.map((id) => evidence.get(id)).filter(Boolean) as EvidenceT[]
-  const websiteHost = lead.company_website ? hostOf(lead.company_website) : null
-  if (!blank(lead.company_name) && !mentionedIn(lead.company_name!, identityItems, websiteHost ? [websiteHost] : [])) {
-    reasons.push('company affiliation is not supported by identity evidence')
+  const identityItems = candidate.identity_evidence_ids.map((id) => evidence.get(id)).filter(Boolean) as EvidenceT[]
+  const identityFromOriginal = identityItems.some((item) => item.inspected_original && sameSource(item.url, sourceUrl))
+  if (!blank(candidate.company_name) && !mentionedIn(candidate.company_name!, identityItems, candidate.company_website ? [hostOf(candidate.company_website) ?? ''] : [])) {
+    caveats.push(`Company "${candidate.company_name}" was removed: not supported by the source.`)
+    candidate = { ...candidate, company_name: null, company_website: null }
   }
-  if (!blank(lead.person_name) && !mentionedIn(lead.person_name!, identityItems)) {
-    reasons.push('person name is not supported by identity evidence')
+  if (!blank(candidate.person_name) && !mentionedIn(candidate.person_name!, identityItems)) {
+    caveats.push('Name was removed: not supported by the source.')
+    candidate = { ...candidate, person_name: null }
   }
-  // A handle is the author shown on the original post: inspecting that page is the evidence (Reddit quotes and
-  // URLs don't contain usernames). Company and person names still need explicit support.
-  const identityFromOriginal = identityItems.some(
-    (item) => item.inspected_original && sourceCanonical !== null && sameSource(item.url, sourceUrl),
-  )
-  if (!blank(lead.public_handle) && !identityFromOriginal && !mentionedIn(lead.public_handle!, identityItems)) {
-    reasons.push('public handle is not supported by identity evidence')
+  if (!blank(candidate.public_handle) && !identityFromOriginal && !mentionedIn(candidate.public_handle!, identityItems)) {
+    unresolved.push('author handle not confirmed on the original page')
+  }
+  if (blank(candidate.buyer_match)) unresolved.push('no explanation of why the author is a buyer')
+
+  // Need evidence: inspectable, from the original source.
+  if (blank(candidate.need_summary)) unresolved.push('need not described')
+  if (!resolves(candidate.need_evidence_ids)) unresolved.push('need evidence references do not resolve')
+  const needItems = candidate.need_evidence_ids.map((id) => evidence.get(id)).filter(Boolean) as EvidenceT[]
+  if (!needItems.some((item) => !blank(item.excerpt) || !blank(item.paraphrase))) unresolved.push('no inspectable need evidence')
+  if (sourceUrl && !needItems.some((item) => item.inspected_original && sameSource(item.url, sourceUrl))) {
+    unresolved.push('original source not reported inspected')
   }
 
-  // Need: referenced, excerpted, and inspected on the original source.
-  if (blank(lead.need_summary)) reasons.push('empty need summary')
-  checkRefs('need', lead.need_evidence_ids, evidence, reasons)
-  const needItems = lead.need_evidence_ids.map((id) => evidence.get(id)).filter(Boolean) as EvidenceT[]
-  for (const item of needItems) {
-    if (blank(item.excerpt)) reasons.push(`need evidence ${item.id} has no excerpt`)
-    if (blank(item.paraphrase)) reasons.push(`need evidence ${item.id} has no paraphrase`)
-  }
-  if (
-    sourceCanonical &&
-    !needItems.some((item) => item.inspected_original && sameSource(item.url, sourceUrl))
-  ) {
-    reasons.push('original source was not reported inspected')
-  }
-
-  // Quote budget: at most 25 words per original source in aggregate.
-  const wordsBySource = new Map<string, number>()
-  for (const item of lead.evidence) {
-    const key = canonicalUrl(item.url) ?? item.url
-    wordsBySource.set(key, (wordsBySource.get(key) ?? 0) + wordCount(item.excerpt))
-  }
-  for (const [, words] of wordsBySource) {
-    if (words > MAX_EXCERPT_WORDS_PER_SOURCE) reasons.push(`excerpts exceed ${MAX_EXCERPT_WORDS_PER_SOURCE} words for one source`)
-  }
-
-  // Publication date: required, original, inside the window, not in the future.
-  // The date may come from search-result metadata for this exact post (Reddit pages show "5d ago"), never from
-  // another page. Such leads carry a caveat so the user checks the date before relying on it.
-  checkRefs('date', lead.date_evidence_ids, evidence, reasons)
-  let dateFromSearchResult = false
-  for (const id of lead.date_evidence_ids) {
-    const item = evidence.get(id)
-    if (!item || item.inspected_original) continue
-    if (sourceCanonical !== null && sameSource(item.url, sourceUrl)) dateFromSearchResult = true
-    else reasons.push('publication date evidence is not from the original source')
-  }
-  const published = parseIsoDate(lead.published_date)
+  // Publication date.
   const today = parseIsoDate(ctx.now.toISOString().slice(0, 10))!
-  if (!published) reasons.push('publication date is missing or not YYYY-MM-DD')
-  else {
-    if (published.getTime() > today.getTime()) reasons.push('publication date is in the future')
-    if (published.getTime() < parseIsoDate(ctx.publishedOnOrAfter)!.getTime()) reasons.push('published before the allowed window')
+  const published = parseIsoDate(normalisedDate)
+  if (candidate.date_status === 'unknown' || !published) {
+    unresolved.push('publication date unknown')
+  } else {
+    if (published.getTime() > today.getTime() + DAY_MS) rejected.push('publication date is in the future')
+    if (published.getTime() < parseIsoDate(ctx.publishedOnOrAfter)!.getTime()) rejected.push('published before the date window')
+    const dateItems = candidate.date_evidence_ids.map((id) => evidence.get(id)).filter(Boolean) as EvidenceT[]
+    if (candidate.date_evidence_ids.length && dateItems.length && !dateItems.some((item) => sameSource(item.url, sourceUrl))) {
+      unresolved.push('publication date evidence is from a different page')
+    }
+    if (candidate.date_status === 'search_result') caveats.push(DATE_FROM_SEARCH_CAVEAT)
+    if (candidate.date_status === 'relative') caveats.push(candidate.date_note ? `${RELATIVE_DATE_CAVEAT} ${candidate.date_note}` : RELATIVE_DATE_CAVEAT)
   }
 
-  // Terms: budget/deadline claims need references; explicit past deadlines are expired.
-  checkRefs('terms', lead.terms_evidence_ids, evidence, reasons, !blank(lead.budget) || !blank(lead.deadline))
-  const deadlineDate = lead.deadline?.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1]
+  // Terms: an explicit past deadline means the request is closed.
+  const deadlineDate = candidate.deadline?.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1]
   if (deadlineDate && parseIsoDate(deadlineDate) && parseIsoDate(deadlineDate)!.getTime() < today.getTime()) {
-    reasons.push('deadline has passed')
+    rejected.push('deadline has passed')
+  }
+  if (!blank(candidate.budget) && !resolves(candidate.terms_evidence_ids)) {
+    caveats.push('Budget was removed: not supported by the source.')
+    candidate = { ...candidate, budget: null }
   }
 
   // Contact route.
-  if (!safeOutgoingUrl(lead.contact_route.url)) reasons.push('contact route is not a public http(s) URL')
-  checkRefs('contact', lead.contact_route.evidence_ids, evidence, reasons)
+  if (candidate.contact_route.kind === 'none' || !safeOutgoingUrl(candidate.contact_route.url)) {
+    unresolved.push('no usable public contact route')
+  }
 
-  // Service fit against the extracted profile (and user focus, when set).
-  if (blank(lead.fit_explanation)) reasons.push('empty fit explanation')
+  // Documented service (and focus).
   const profileServices = ctx.profile.services.map((service) => service.value)
-  if (!matchesServices(profileServices, lead.matched_service)) {
-    reasons.push('matched service is not in the extracted profile')
-  } else if (ctx.focus?.services.length && !matchesServices(ctx.focus.services, lead.matched_service)) {
-    reasons.push('matched service is outside the selected focus')
+  const serviceFit = serviceMatch(profileServices, candidate.matched_service)
+  if (serviceFit === 'unrelated') rejected.push('need is not addressed by a documented service')
+  else if (serviceFit === 'unclear') unresolved.push('matched service only partly matches the documented services')
+  else if (ctx.focus?.services.length && !matchesServices(ctx.focus.services, candidate.matched_service)) {
+    rejected.push('outside the selected focus')
   }
+  if (blank(candidate.fit_explanation)) unresolved.push('fit not explained')
 
-  if (blank(lead.outreach_message)) reasons.push('empty outreach message')
-
-  // Score bounds and thresholds, with freshness recomputed server-side.
-  const { intent, service_fit, contactability } = lead.score
-  const inBounds = (value: number, max: number) => Number.isInteger(value) && value >= 0 && value <= max
-  if (!inBounds(intent, 3) || !inBounds(service_fit, 3) || !inBounds(contactability, 2) || !inBounds(lead.score.freshness, 2)) {
-    reasons.push('score out of bounds')
+  // Scores rank; they never gate. Clamp to the rubric and recompute freshness from the date.
+  const clamp = (value: number, max: number) => (Number.isFinite(value) ? Math.max(0, Math.min(max, Math.round(value))) : 0)
+  const score = {
+    intent: clamp(candidate.score.intent, 3),
+    service_fit: clamp(candidate.score.service_fit, 3),
+    freshness: normalisedDate ? freshnessFor(normalisedDate, ctx.now) : 0,
+    contactability: clamp(candidate.score.contactability, 2),
+    total: 0,
   }
-  const freshness = freshnessFor(lead.published_date, ctx.now)
-  const total = intent + service_fit + freshness + contactability
-  if (intent < 2) reasons.push('intent below threshold')
-  if (service_fit !== 3) reasons.push('service fit below threshold')
-  if (freshness < 1) reasons.push('freshness below threshold')
-  if (contactability !== 2) reasons.push('contactability below threshold')
-  if (total < 8) reasons.push('total score below threshold')
+  score.total = score.intent + score.service_fit + score.freshness + score.contactability
 
-  return { reasons, sourceUrl, dateFromSearchResult, score: { intent, service_fit, freshness, contactability, total } }
+  return { rejected, unresolved, caveats, clean: candidate, sourceUrl, score }
 }
 
 /**
- * Apply all gates, deduplicate against history and within the batch, sort and cap.
- * Ambiguous probable duplicates are held for review rather than displayed.
+ * Sort every candidate into published (best qualified, up to five), qualified_not_selected, unresolved or
+ * rejected, deduplicating against earlier opportunities and within the batch.
  */
-export function qualifyLeads(leads: LeadT[], ctx: GateContext) {
+export function qualifyCandidates(candidates: CandidateT[], ctx: GateContext) {
   const auditKeys = new Set<string | null>(ctx.auditUrls.flatMap(auditKeysFor))
-  const passing: QualifiedLead[] = []
-  const rejected: RejectedLead[] = []
+  const outcomes: CandidateOutcome[] = []
+  const passing: Array<{ check: Check; key: string; identity: string; needText: string }> = []
 
-  for (const original of leads) {
-    const normalisedDate = normalisePublishedDate(original.published_date)
-    const lead = applyQuoteBudget(normalisedDate ? { ...original, published_date: normalisedDate } : original)
-    const { reasons, sourceUrl, dateFromSearchResult, score } = leadGateReasons(lead, ctx, auditKeys)
-    if (reasons.length || !sourceUrl) {
-      rejected.push({ headline: lead.headline, source_url: lead.source_url, reasons })
+  for (const candidate of candidates) {
+    const check = checkCandidate(candidate, ctx, auditKeys)
+    const key = check.sourceUrl ? sourceKey(check.sourceUrl) : null
+    const base = {
+      headline: candidate.headline,
+      source_url: candidate.source_url,
+      source_key: key,
+      model_decision: candidate.decision,
+      date_status: check.clean.date_status,
+      published_date: check.clean.published_date,
+      score: check.score,
+      candidate: check.clean,
+    }
+    if (check.rejected.length) {
+      outcomes.push({ ...base, decision: 'rejected', reasons: [...check.rejected, ...check.unresolved] })
       continue
     }
-    passing.push({
-      lead: {
-        ...lead,
-        source_url: sourceUrl,
-        company_website: lead.company_website ? safeOutgoingUrl(lead.company_website) : null,
-        contact_route: { ...lead.contact_route, url: safeOutgoingUrl(lead.contact_route.url)! },
-        score: { ...lead.score, freshness: score.freshness },
-        caveats: dateFromSearchResult && !lead.caveats.includes(DATE_FROM_SEARCH_CAVEAT) ? [...lead.caveats, DATE_FROM_SEARCH_CAVEAT] : lead.caveats,
-      },
-      sourceUrl,
-      sourceKey: sourceKey(sourceUrl)!,
-      identityKey: identityKey(lead),
-      needText: `${lead.headline} ${lead.need_summary}`,
-      score,
-      heldReason: null,
-    })
+    if (check.unresolved.length || !key) {
+      outcomes.push({ ...base, decision: 'unresolved', reasons: check.unresolved.length ? check.unresolved : ['source could not be identified'] })
+      continue
+    }
+    passing.push({ check, key, identity: identityKey(check.clean), needText: `${check.clean.headline} ${check.clean.need_summary}` })
   }
+
+  // Unresolved candidates also claim their source, so a later duplicate isn't published from another URL.
+  const history: PriorOpportunity[] = [...ctx.prior]
+  const seenUnresolved = new Set(outcomes.filter((o) => o.decision === 'unresolved' && o.source_key).map((o) => o.source_key!))
 
   passing.sort(
     (a, b) =>
-      b.score.total - a.score.total ||
-      Number(b.lead.intent === 'explicit_request') - Number(a.lead.intent === 'explicit_request') ||
-      b.lead.published_date.localeCompare(a.lead.published_date),
+      b.check.score.total - a.check.score.total ||
+      Number(b.check.clean.intent === 'explicit_request') - Number(a.check.clean.intent === 'explicit_request') ||
+      (b.check.clean.published_date ?? '').localeCompare(a.check.clean.published_date ?? ''),
   )
 
   const published: QualifiedLead[] = []
-  const held: QualifiedLead[] = []
-  const history: PriorOpportunity[] = [...ctx.prior]
-
-  for (const candidate of passing) {
-    const tokens = needTokens(candidate.needText)
-    let duplicate: string | null = null
-    let hold: string | null = null
-    for (const prior of history) {
-      if (prior.sourceKey === candidate.sourceKey) {
-        duplicate = 'same source as an existing opportunity'
-        break
-      }
-      const sim = similarity(tokens, needTokens(prior.needText))
-      const sameIdentity = Boolean(candidate.identityKey) && prior.identityKey === candidate.identityKey
-      if (sameIdentity && sim >= 0.5) {
-        duplicate = 'same author/company and need as an existing opportunity'
-        break
-      }
-      // Different buyers with similar needs are separate opportunities; cross-posts share an author/company.
-      if (sameIdentity && sim >= 0.2) hold ??= 'same author/company with a possibly related need'
+  for (const item of passing) {
+    const { check, key, identity, needText } = item
+    const base = {
+      headline: check.clean.headline,
+      source_url: check.clean.source_url,
+      source_key: key,
+      model_decision: check.clean.decision,
+      date_status: check.clean.date_status,
+      published_date: check.clean.published_date,
+      score: check.score,
+      candidate: check.clean,
     }
-    if (duplicate) {
-      rejected.push({ headline: candidate.lead.headline, source_url: candidate.sourceUrl, reasons: [duplicate] })
+    const tokens = needTokens(needText)
+    const duplicate = history.find((prior) => {
+      const needOverlap = similarity(tokens, needTokens(prior.needText))
+      const sameAuthor = !identity || !prior.identityKey || prior.identityKey === identity
+      // Same page: a duplicate unless a different author states a different need (e.g. a reply under the thread).
+      if (prior.sourceKey === key) return sameAuthor || needOverlap >= 0.3
+      return Boolean(identity) && prior.identityKey === identity && needOverlap >= 0.5
+    })
+    if (duplicate || seenUnresolved.has(key)) {
+      outcomes.push({ ...base, decision: 'rejected', reasons: ['duplicate of an existing opportunity'] })
       continue
     }
-    history.push({ sourceKey: candidate.sourceKey, identityKey: candidate.identityKey, needText: candidate.needText })
-    if (hold) {
-      held.push({ ...candidate, heldReason: hold })
-      continue
-    }
+    history.push({ sourceKey: key, identityKey: identity, needText })
     if (published.length >= MAX_PUBLISHED_PER_RUN) {
-      rejected.push({ headline: candidate.lead.headline, source_url: candidate.sourceUrl, reasons: ['over the five-lead limit'] })
+      outcomes.push({ ...base, decision: 'qualified_not_selected', reasons: ['qualified but outside the top five'] })
       continue
     }
-    published.push(candidate)
+    const lead = toLead(check)
+    published.push({ lead, sourceUrl: check.sourceUrl!, sourceKey: key, identityKey: identity, needText, score: check.score })
+    outcomes.push({ ...base, decision: 'published', reasons: [] })
   }
 
-  return { published, held, rejected }
+  const count = (decision: Decision) => outcomes.filter((o) => o.decision === decision).length
+  return {
+    published,
+    outcomes,
+    counts: {
+      discovered: candidates.length,
+      published: published.length,
+      qualified_not_selected: count('qualified_not_selected'),
+      unresolved: count('unresolved'),
+      rejected: count('rejected'),
+    },
+  }
+}
+
+function toLead(check: Check): LeadT {
+  const c = check.clean
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { decision, decision_reasons, missing_info, access_limitations, ...rest } = c
+  const caveats = [...c.caveats, ...check.caveats.filter((caveat) => !c.caveats.includes(caveat))]
+  return {
+    ...rest,
+    source_url: check.sourceUrl!,
+    published_date: c.published_date!,
+    company_website: c.company_website ? safeOutgoingUrl(c.company_website) : null,
+    contact_route: {
+      url: safeOutgoingUrl(c.contact_route.url)!,
+      kind: c.contact_route.kind as 'original_post' | 'public_profile' | 'business_contact',
+      explanation: c.contact_route.explanation,
+      evidence_ids: c.contact_route.evidence_ids,
+    },
+    score: { intent: check.score.intent, service_fit: check.score.service_fit, freshness: check.score.freshness, contactability: check.score.contactability },
+    caveats,
+  }
+}
+
+/* ------------------------------- Follow-up -------------------------------- */
+
+/**
+ * At most one follow-up per run, only after a completed initial or daily run with fewer than three published
+ * leads, when the evidence shows a concrete next step, and only while research is open.
+ */
+export function followUpDecision(args: {
+  kind: 'initial' | 'daily' | 'follow_up'
+  researchStatus: string
+  published: number
+  unresolved: number
+  untriedAngles: string[]
+  worthwhile: boolean
+  researchOpen: boolean
+}): { run: boolean; reason: string } {
+  if (args.kind === 'follow_up') return { run: false, reason: 'follow-ups never chain' }
+  if (!args.researchOpen) return { run: false, reason: 'research period ended' }
+  if (args.researchStatus === 'website_unreadable' || args.researchStatus === 'unsupported_business') {
+    return { run: false, reason: `research status ${args.researchStatus}` }
+  }
+  if (args.published >= 3) return { run: false, reason: 'three or more leads already published' }
+  if (!args.untriedAngles.length && !args.unresolved) return { run: false, reason: 'no untried angles or unresolved candidates' }
+  if (!args.worthwhile && !args.unresolved) return { run: false, reason: 'research reported no plausible next step' }
+  return {
+    run: true,
+    reason: `${args.published} published; ${args.unresolved} unresolved candidate(s) and ${args.untriedAngles.length} untried angle(s)`,
+  }
 }

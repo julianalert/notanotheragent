@@ -9,7 +9,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "smoke": "tsx --env-file-if-exists=.env.local scripts/smoke-test.ts"
+    "research:eval": "tsx --env-file-if-exists=.env.local scripts/research-eval.ts",
+    "diagnose": "tsx --env-file-if-exists=.env.local scripts/diagnose.ts"
   },
   "prettier": {
     "semi": false,

@@ -36,7 +36,7 @@ create table if not exists radars (
 create table if not exists research_runs (
   id uuid primary key default gen_random_uuid(),
   radar_id uuid not null references radars(id) on delete cascade,
-  kind text not null check (kind in ('initial', 'daily')),
+  kind text not null check (kind in ('initial', 'daily', 'follow_up')),
   run_key text not null,
   status text not null check (status in ('queued', 'running', 'processing', 'completed', 'failed', 'cancelled')),
   provider text,
@@ -54,7 +54,9 @@ create table if not exists research_runs (
   manual_retry_count integer not null default 0,
   error_code text,
   error text,
-  outcome text check (outcome in ('matches', 'no_matches', 'website_unreadable', 'unsupported_business', 'insufficient_coverage', 'validation_failed')),
+  outcome text check (outcome in ('qualified_results', 'candidates_unresolved', 'candidates_rejected', 'no_candidates', 'research_incomplete', 'website_unreadable', 'unsupported_business', 'matches', 'no_matches', 'insufficient_coverage', 'validation_failed')),
+  parent_run_id uuid references research_runs(id) on delete cascade,
+  diagnostics jsonb,
   usage jsonb,
   cost_usd numeric(10, 4),
   duration_ms integer,
@@ -110,6 +112,35 @@ create table if not exists leads (
 
 create index if not exists leads_radar_idx on leads (radar_id, discovered_at desc);
 alter table leads add column if not exists user_status_at timestamptz;
+
+-- research-v2: follow-up runs, v2 outcomes, diagnostics and the candidate pool.
+alter table research_runs drop constraint if exists research_runs_kind_check;
+alter table research_runs add constraint research_runs_kind_check check (kind in ('initial', 'daily', 'follow_up'));
+alter table research_runs drop constraint if exists research_runs_outcome_check;
+alter table research_runs add constraint research_runs_outcome_check check (outcome in (
+  'qualified_results', 'candidates_unresolved', 'candidates_rejected', 'no_candidates', 'research_incomplete',
+  'website_unreadable', 'unsupported_business', 'matches', 'no_matches', 'insufficient_coverage', 'validation_failed'));
+alter table research_runs add column if not exists parent_run_id uuid references research_runs(id) on delete cascade;
+alter table research_runs add column if not exists diagnostics jsonb;
+
+create table if not exists research_candidates (
+  id uuid primary key default gen_random_uuid(),
+  run_id uuid not null references research_runs(id) on delete cascade,
+  radar_id uuid not null references radars(id) on delete cascade,
+  source_url text not null,
+  source_key text,
+  headline text not null,
+  decision text not null check (decision in ('published', 'qualified_not_selected', 'unresolved', 'rejected')),
+  model_decision text not null,
+  reasons jsonb not null default '[]',
+  date_status text not null,
+  published_date date,
+  score_total integer not null default 0,
+  data jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists research_candidates_run_idx on research_candidates (run_id);
+create index if not exists research_candidates_radar_idx on research_candidates (radar_id, decision);
 
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (

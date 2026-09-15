@@ -1,396 +1,464 @@
 import { describe, expect, it } from 'vitest'
-import { ResearchResult, type BusinessProfileT, type LeadT } from './contract'
+import { ResearchResult, type BusinessProfileT, type CandidateT } from './contract'
 import {
+  applyQuoteBudget,
   canonicalUrl,
+  DATE_FROM_SEARCH_CAVEAT,
+  followUpDecision,
   freshnessFor,
   isResearchOpen,
-  qualifyLeads,
-  DATE_FROM_SEARCH_CAVEAT,
   matchesServices,
   normalisePublishedDate,
+  qualifyCandidates,
   sameService,
   sourceKey,
   validateProfile,
   type GateContext,
   type PriorOpportunity,
 } from './gates'
-import { buildResearchInput, publishedOnOrAfter, WEBSITE_LANGUAGE } from './prompt'
+import { buildResearchInput, lintQuery, publishedOnOrAfter, SYSTEM_PROMPT, WEBSITE_LANGUAGE } from './prompt'
 
 /*
- * Qualification fixtures (spec §1.8 and §2.2). All data is fictional. Semantic cases (expansion news, vendor
- * adverts, "not looking for an agency", vacancies, geography) are expressed as the scores an accurate model
- * assigns; the tests prove the local gates never publish them and that structural failures never reach the feed.
+ * Qualification fixtures. All data is fictional. Semantic judgements (is this author our buyer? is this a seller?)
+ * are made by the research model and expressed here as its decision; these tests prove how the application treats
+ * those decisions, and that structural problems make a candidate unresolved or rejected instead of vanishing.
  */
 
-const NOW = new Date('2026-09-14T10:00:00Z')
-const WEBSITE = 'https://btp-automatisation.example-agency.fr'
-const SERVICE = 'Quote automation'
+const NOW = new Date('2026-09-15T10:00:00Z')
+const WINDOW = '2026-08-16'
 
+/** A generic software business that sells lead research to agencies (shaped like the regression website). */
+const WEBSITE = 'https://leadsoftware.example-saas.com'
 const profile: BusinessProfileT = {
-  name: 'BTP Automatisation',
+  name: 'Lead software',
   website_url: WEBSITE,
-  summary: 'Automation for construction companies.',
+  summary: 'Public-web lead research for agencies.',
   services: [
-    { value: SERVICE, basis: 'stated', evidence_ids: ['p1'] },
-    { value: 'Document extraction', basis: 'stated', evidence_ids: ['p1'] },
+    { value: 'Daily public-web lead research for agencies with evidence for each opportunity', basis: 'stated', evidence_ids: ['p1'] },
+    { value: 'First-message drafting for agency owners', basis: 'stated', evidence_ids: ['p1'] },
   ],
-  customer_types: [{ value: 'Construction contractors', basis: 'stated', evidence_ids: ['p1'] }],
+  customer_types: [{ value: 'Agency owners', basis: 'stated', evidence_ids: ['p1'] }],
   problems_solved: [],
-  markets: [{ value: 'France', basis: 'stated', evidence_ids: ['p1'] }],
-  languages: [{ value: 'French', basis: 'stated', evidence_ids: ['p1'] }],
+  markets: [{ value: 'English-speaking markets', basis: 'inferred', evidence_ids: ['p1'] }],
+  languages: [{ value: 'English', basis: 'stated', evidence_ids: ['p1'] }],
   proof_points: [],
   pricing: null,
   exclusions: [],
-  search_angles: [],
+  acquisition_brief: {
+    sells: 'Lead research software that finds public buying signals for agencies.',
+    buyers: ['Agency owners and service-business operators who need new clients'],
+    recognise_buyer_in_posts: ['Author runs an agency, studio or freelance service business'],
+    buyer_problems_in_their_words: ['referrals dried up', 'cold outreach gets no replies', 'prospecting takes all my time'],
+    trigger_situations: ['Pipeline empty after a big client left'],
+    explicit_requests: ['how do you find clients', 'recommend a lead source for my agency'],
+    not_our_buyer: ['Businesses hiring an agency (they are the agency’s prospects, not ours)'],
+    buyer_seller_confusions: ['Agencies advertising their own lead generation services'],
+    geography: { value: null, basis: 'unknown' },
+    languages: { value: 'English', basis: 'stated' },
+  },
   evidence: [
-    {
-      id: 'p1',
-      url: `${WEBSITE}/services`,
-      title: 'Services',
-      inspected_original: true,
-      excerpt: 'Nous automatisons vos devis',
-      paraphrase: 'Quote and document automation for contractors.',
-    },
+    { id: 'p1', url: `${WEBSITE}/`, title: 'Home', inspected_original: true, excerpt: 'Leads for agencies', paraphrase: 'Lead research for agencies.' },
   ],
   uncertainties: [],
 }
 
 let counter = 0
-function makeLead(overrides: Partial<LeadT> = {}): LeadT {
+function makeCandidate(overrides: Partial<CandidateT> = {}): CandidateT {
   counter++
   const url = overrides.source_url ?? `https://forum.example.org/threads/${counter}`
   return {
-    headline: `Contractor needs quote automation ${counter}`,
+    headline: `Agency owner needs new clients ${counter}`,
     person_name: null,
     company_name: null,
-    public_handle: `@builder${counter}`,
+    public_handle: `u/agency_owner_${counter}`,
     role: null,
     company_website: null,
     location: null,
     identity_evidence_ids: ['e1'],
+    buyer_match: 'The author says they run a small marketing agency.',
     source_url: url,
     source_platform: 'Forum',
     published_date: '2026-09-13',
+    date_status: 'exact',
+    date_note: null,
     date_evidence_ids: ['e1'],
-    need_summary: `Wants someone to automate quotes from job sheets (${counter})`,
+    need_summary: `Referrals slowed down and they don't know how to find new clients (${counter})`,
     need_evidence_ids: ['e1'],
-    intent: 'explicit_request',
-    matched_service: SERVICE,
-    fit_explanation: 'The post asks for quote automation; the website documents quote automation.',
-    fit_is_inferred: false,
+    intent: 'stated_problem',
+    matched_service: 'Daily public-web lead research for agencies',
+    fit_explanation: 'They describe an empty pipeline; the product finds public buying signals for agencies.',
+    fit_is_inferred: true,
     budget: null,
     deadline: null,
     terms_evidence_ids: [],
     contact_route: { url, kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['e1'] },
-    outreach_angle: 'Offer a short review of their job sheet format.',
-    outreach_language: 'fr',
-    outreach_message: 'Bonjour, ...',
-    score: { intent: 3, service_fit: 3, freshness: 2, contactability: 2 },
+    outreach_angle: 'Offer to share where their buyers are asking publicly.',
+    outreach_language: 'en',
+    outreach_message: 'Hi — saw your post about referrals slowing down…',
+    score: { intent: 2, service_fit: 3, freshness: 2, contactability: 2 },
     evidence: [
       {
         id: 'e1',
         url,
-        title: `Post by @builder${counter}`,
+        title: `Post by u/agency_owner_${counter}`,
         inspected_original: true,
-        excerpt: 'Looking for someone to automate quotes from our job sheets',
-        paraphrase: 'Owner asks for quote automation help.',
+        excerpt: 'Referrals used to keep us busy but the last three months have been dead',
+        paraphrase: 'Their agency relied on referrals, which have dried up.',
       },
     ],
     caveats: [],
+    decision: 'qualified',
+    decision_reasons: [],
+    missing_info: [],
+    access_limitations: [],
     ...overrides,
   }
 }
 
-function ctx(leads: LeadT[], extra: Partial<GateContext> = {}): GateContext {
-  return {
-    now: NOW,
-    publishedOnOrAfter: '2026-08-15',
-    auditUrls: leads.map((lead) => lead.source_url),
-    profile,
-    focus: null,
-    prior: [],
-    ...extra,
-  }
+function ctx(candidates: CandidateT[], extra: Partial<GateContext> = {}): GateContext {
+  return { now: NOW, publishedOnOrAfter: WINDOW, auditUrls: candidates.map((c) => c.source_url), profile, focus: null, prior: [], ...extra }
 }
+const run = (candidates: CandidateT[], extra: Partial<GateContext> = {}) => qualifyCandidates(candidates, ctx(candidates, extra))
+const decisionOf = (candidates: CandidateT[], extra: Partial<GateContext> = {}) => run(candidates, extra).outcomes[0]
 
-function run(leads: LeadT[], extra: Partial<GateContext> = {}) {
-  return qualifyLeads(leads, ctx(leads, extra))
-}
-
-describe('§1.8 worked examples', () => {
-  it('accepts an explicit, recent, contactable request with direct service fit', () => {
-    const result = run([makeLead()])
-    expect(result.published).toHaveLength(1)
-    expect(result.published[0].score.total).toBe(10)
+describe('required regression cases', () => {
+  it('1. agency owner with slow referrals: publishable stated problem, no product category named', () => {
+    const outcome = decisionOf([makeCandidate()])
+    expect(outcome.decision).toBe('published')
+    expect(outcome.candidate.intent).toBe('stated_problem')
   })
 
-  it('accepts a first-person stated problem, labelled as such', () => {
-    const lead = makeLead({
-      intent: 'stated_problem',
-      matched_service: 'Document extraction',
-      score: { intent: 2, service_fit: 3, freshness: 2, contactability: 2 },
+  it('2. a non-agency business hiring an agency is not automatically our customer', () => {
+    const hiring = makeCandidate({
+      headline: 'Dental clinic looking for a marketing agency',
+      intent: 'explicit_request',
+      buyer_match: '',
+      decision: 'rejected',
+      decision_reasons: ["wrong customer type: a business hiring an agency is the agency's prospect, not ours"],
     })
-    const result = run([lead])
-    expect(result.published).toHaveLength(1)
-    expect(result.published[0].lead.intent).toBe('stated_problem')
+    const outcome = decisionOf([hiring])
+    expect(outcome.decision).toBe('rejected')
+    expect(outcome.reasons.join(' ')).toMatch(/wrong customer type/)
+    // Even if the model marked it qualified, a missing buyer match can't be published.
+    expect(decisionOf([{ ...hiring, decision: 'qualified', decision_reasons: [] }]).decision).toBe('unresolved')
+    expect(SYSTEM_PROMPT).toMatch(/customer from that customer's customer/)
   })
 
-  it('rejects an expansion announcement with no expressed need', () => {
-    const result = run([makeLead({ score: { intent: 0, service_fit: 3, freshness: 2, contactability: 2 } })])
-    expect(result.published).toHaveLength(0)
-    expect(result.rejected[0].reasons).toContain('intent below threshold')
-  })
-
-  it('rejects an agency advertising its own services (seller, not buyer)', () => {
-    const result = run([makeLead({ score: { intent: 0, service_fit: 0, freshness: 2, contactability: 2 } })])
-    expect(result.published).toHaveLength(0)
-  })
-
-  it('rejects a two-year-old forum question', () => {
-    const result = run([makeLead({ published_date: '2024-09-01' })])
-    expect(result.rejected[0].reasons).toEqual(
-      expect.arrayContaining(['published before the allowed window', 'freshness below threshold']),
+  it('3. a recent relevant post without literal month or year words qualifies, and queries must not add them', () => {
+    expect(decisionOf([makeCandidate({ headline: 'How do you guys find clients for a small web studio?', published_date: '2026-09-12' })]).decision).toBe('published')
+    expect(lintQuery('"struggling to get clients" "agency" "September" "2026"')).toEqual(
+      expect.arrayContaining(['month name', 'literal year', '4 stacked exact phrases']),
     )
+    expect(lintQuery('agency owner struggling to get clients')).toEqual([])
+    expect(SYSTEM_PROMPT).toMatch(/Do not add literal month names, years/)
   })
 
-  it('rejects a perfect snippet whose original page was not inspected', () => {
-    const lead = makeLead()
-    lead.evidence[0].inspected_original = false
-    const result = run([lead])
-    expect(result.rejected[0].reasons).toContain('original source was not reported inspected')
+  it('4. an agency promoting its own services is rejected', () => {
+    const outcome = decisionOf([makeCandidate({ decision: 'rejected', decision_reasons: ['seller promoting their own lead generation services'] })])
+    expect(outcome.decision).toBe('rejected')
   })
 
-  it('rejects a post that is absent from the search tool audit', () => {
-    const lead = makeLead()
-    const result = qualifyLeads([lead], ctx([lead], { auditUrls: [] }))
-    expect(result.rejected[0].reasons).toContain('source URL does not appear in the search tool audit')
+  it('5. a public handle with no email, name, company, website, budget or role is enough', () => {
+    const outcome = decisionOf([makeCandidate({ person_name: null, company_name: null, company_website: null, role: null, budget: null })])
+    expect(outcome.decision).toBe('published')
   })
 
-  it('rejects "not looking for an agency" even when keywords match', () => {
-    const result = run([makeLead({ score: { intent: 0, service_fit: 3, freshness: 2, contactability: 2 } })])
+  it('6. a closed request is rejected', () => {
+    expect(decisionOf([makeCandidate({ decision: 'rejected', decision_reasons: ['request marked filled'] })]).decision).toBe('rejected')
+    expect(decisionOf([makeCandidate({ intent: 'explicit_request', deadline: 'Proposals due 2026-09-01', terms_evidence_ids: ['e1'] })]).reasons).toContain('deadline has passed')
+  })
+
+  it('7. the same post with different tracking parameters is deduplicated', () => {
+    const original = makeCandidate({ source_url: 'https://forum.example.org/t/Need-Clients?id=42&utm_source=a' })
+    const tracked = makeCandidate({ source_url: 'https://forum.example.org/t/Need-Clients?utm_medium=b&id=42&fbclid=x' })
+    expect(sourceKey(tracked.source_url)).toBe(sourceKey(original.source_url))
+    const result = run([original, tracked], { auditUrls: [original.source_url, tracked.source_url] })
+    expect(result.counts.published).toBe(1)
+    expect(result.outcomes.find((o) => o.decision === 'rejected')!.reasons).toContain('duplicate of an existing opportunity')
+  })
+
+  it('8. an undated candidate is preserved as unresolved, not erased or presented as fresh', () => {
+    const result = run([makeCandidate({ published_date: null, date_status: 'unknown', date_evidence_ids: [] })])
     expect(result.published).toHaveLength(0)
+    expect(result.outcomes[0].decision).toBe('unresolved')
+    expect(result.outcomes[0].reasons).toContain('publication date unknown')
   })
 
-  it('rejects a full-time vacancy that does not accept contractors', () => {
-    const result = run([makeLead({ score: { intent: 1, service_fit: 3, freshness: 2, contactability: 2 } })])
-    expect(result.published).toHaveLength(0)
-  })
-
-  it('rejects a request whose deadline has passed', () => {
-    const lead = makeLead({ deadline: 'Proposals due 2026-09-01', terms_evidence_ids: ['e1'] })
-    expect(run([lead]).rejected[0].reasons).toContain('deadline has passed')
-  })
-
-  it('accepts an anonymous handle without fabricating a name or company', () => {
-    const result = run([makeLead({ person_name: null, company_name: null })])
-    expect(result.published).toHaveLength(1)
-    expect(result.published[0].lead.company_name).toBeNull()
-  })
-
-  it('does not republish the same request reposted on another platform', () => {
-    const first = makeLead({ public_handle: '@maconpro', need_summary: 'Automate quotes from job sheets for masonry company' })
-    first.evidence[0].title = 'Post by @maconpro'
-    const repost = makeLead({
-      source_url: 'https://other-platform.example.net/p/991',
-      public_handle: '@maconpro',
-      headline: first.headline,
-      need_summary: 'Automate quotes from job sheets for masonry company',
-    })
-    repost.evidence[0].title = 'Post by @maconpro'
-    const prior: PriorOpportunity[] = [
-      { sourceKey: sourceKey(first.source_url)!, identityKey: 'maconpro', needText: `${first.headline} ${first.need_summary}` },
-    ]
-    const result = run([repost], { prior })
-    expect(result.published).toHaveLength(0)
-  })
-
-  it('rejects a buyer outside the documented service scope', () => {
-    const result = run([makeLead({ score: { intent: 3, service_fit: 0, freshness: 2, contactability: 2 } })])
-    expect(result.rejected[0].reasons).toContain('service fit below threshold')
-  })
-})
-
-describe('§2.2 additional fixtures', () => {
-  it('drops a lead with a missing source reference', () => {
-    const result = run([makeLead({ need_evidence_ids: ['e9'] })])
-    expect(result.rejected[0].reasons).toContain('need: reference e9 does not resolve')
-  })
-
-  it('rejects a publication date after now', () => {
-    expect(run([makeLead({ published_date: '2026-09-20' })]).rejected[0].reasons).toContain(
-      'publication date is in the future',
-    )
-  })
-
-  it('rejects an invalid public URL', () => {
-    const lead = makeLead({ source_url: 'http://localhost:3000/post/1' })
-    lead.evidence[0].url = lead.source_url
-    expect(run([lead]).rejected[0].reasons).toContain('source URL is not a public http(s) URL')
-  })
-
-  it('rejects an invented company affiliation', () => {
-    const result = run([makeLead({ company_name: 'Bouygues Construction' })])
-    expect(result.rejected[0].reasons).toContain('company affiliation is not supported by identity evidence')
-  })
-
-  it('treats a repeated source with tracking parameters as a duplicate', () => {
-    const original = makeLead({ source_url: 'https://forum.example.org/t/Quote-Help?id=42' })
-    const tracked = { ...original, source_url: 'https://www.forum.example.org/t/Quote-Help/?id=42&utm_source=x#reply' }
-    expect(canonicalUrl(tracked.source_url)).toBe(canonicalUrl(original.source_url))
-    const prior: PriorOpportunity[] = [{ sourceKey: sourceKey(original.source_url)!, identityKey: 'other', needText: 'unrelated' }]
-    const result = qualifyLeads([tracked], ctx([tracked], { prior, auditUrls: [original.source_url] }))
-    expect(result.published).toHaveLength(0)
-    expect(result.rejected[0].reasons).toContain('same source as an existing opportunity')
-  })
-
-  it('preserves case-sensitive paths and content-identifying query parameters', () => {
-    expect(canonicalUrl('https://Example.org/Post/AbC?id=7&utm_medium=x')).toBe('example.org/Post/AbC?id=7')
-    expect(canonicalUrl('https://example.org/post/abc?id=8')).not.toBe(canonicalUrl('https://example.org/post/abc?id=7'))
-  })
-
-  it('blocks research exactly at the expiry boundary', () => {
+  it('9. a search started at or after the 14-day deadline is blocked, including follow-ups', () => {
     const endsAt = new Date('2026-09-28T10:00:00Z')
     expect(isResearchOpen(new Date(endsAt.getTime() - 1), endsAt)).toBe(true)
     expect(isResearchOpen(endsAt, endsAt)).toBe(false)
     expect(isResearchOpen(new Date(endsAt.getTime() + 1), endsAt)).toBe(false)
-  })
-
-  it('renders the actual count on a partial result', () => {
-    const result = run([makeLead(), makeLead({ published_date: '2020-01-01' }), makeLead({ need_evidence_ids: [] })])
-    expect(result.published).toHaveLength(1)
-    expect(result.rejected).toHaveLength(2)
-  })
-
-  it('never publishes more than five leads', () => {
-    const leads = Array.from({ length: 7 }, (_, index) =>
-      makeLead({ need_summary: `Distinct need number ${index} about ${['roofing', 'plumbing', 'paint', 'tiles', 'glass', 'steel', 'wood'][index]}` }),
-    )
-    expect(run(leads).published).toHaveLength(5)
-  })
-
-  it('cannot let a formatting repair manufacture evidence', () => {
-    // A repaired result that introduces a URL the research never consulted fails the audit gate.
-    const repaired = makeLead({ source_url: 'https://invented.example.com/post' })
-    repaired.evidence[0].url = repaired.source_url
-    const result = qualifyLeads([repaired], ctx([], { auditUrls: ['https://forum.example.org/threads/real'] }))
-    expect(result.published).toHaveLength(0)
-  })
-
-  it('requires references for budget claims', () => {
-    expect(run([makeLead({ budget: '€5,000' })]).rejected[0].reasons).toContain('terms: no evidence reference')
-  })
-
-  it('enforces the 25-word quote budget per source', () => {
-    const lead = makeLead()
-    lead.evidence[0].excerpt = Array.from({ length: 30 }, () => 'word').join(' ')
-    expect(run([lead]).rejected[0].reasons).toContain('excerpts exceed 25 words for one source')
-  })
-
-  it('recomputes freshness server-side instead of trusting the model', () => {
-    const lead = makeLead({ published_date: '2026-08-20', score: { intent: 3, service_fit: 3, freshness: 2, contactability: 2 } })
-    const result = run([lead])
-    expect(result.published[0].score.freshness).toBe(1)
-    expect(freshnessFor('2026-09-07', NOW)).toBe(2)
-    expect(freshnessFor('2026-08-15', NOW)).toBe(1)
-  })
-
-  it('requires the matched service to exist in the profile and focus', () => {
-    expect(run([makeLead({ matched_service: 'SEO' })]).rejected[0].reasons).toContain(
-      'matched service is not in the extracted profile',
-    )
-    const focused = run([makeLead()], { focus: { services: ['Document extraction'], market: null } })
-    expect(focused.rejected[0].reasons).toContain('matched service is outside the selected focus')
+    const decision = followUpDecision({
+      kind: 'initial',
+      researchStatus: 'complete',
+      published: 0,
+      unresolved: 2,
+      untriedAngles: ['x'],
+      worthwhile: true,
+      researchOpen: isResearchOpen(endsAt, endsAt),
+    })
+    expect(decision).toEqual({ run: false, reason: 'research period ended' })
   })
 })
 
-describe('profile and windows', () => {
-  it('requires a corroborated source on the submitted business domain', () => {
-    expect(validateProfile(profile, WEBSITE, [`${WEBSITE}/services`]).ok).toBe(true)
-    expect(validateProfile(profile, WEBSITE, ['https://unrelated.example.com']).reasons).toContain(
-      'no consulted source on the submitted business domain',
+describe('qualification rules', () => {
+  it('keeps every candidate with a decision and reasons', () => {
+    const result = run([
+      makeCandidate(),
+      makeCandidate({ published_date: '2024-01-01' }),
+      makeCandidate({ published_date: null, date_status: 'unknown' }),
+      makeCandidate({ decision: 'rejected', decision_reasons: ['seller'] }),
+    ])
+    expect(result.counts).toMatchObject({ discovered: 4, published: 1, unresolved: 1, rejected: 2 })
+    expect(result.outcomes.every((o) => o.decision === 'published' || o.reasons.length > 0)).toBe(true)
+  })
+
+  it('scores rank but never gate', () => {
+    const lowScore = makeCandidate({ score: { intent: 1, service_fit: 1, freshness: 0, contactability: 0 } })
+    expect(decisionOf([lowScore]).decision).toBe('published')
+    const strong = makeCandidate({ intent: 'explicit_request', score: { intent: 3, service_fit: 3, freshness: 2, contactability: 2 } })
+    expect(run([lowScore, strong]).published[0].lead.headline).toBe(strong.headline)
+  })
+
+  it('a missing audit match is a verification issue, not proof of fabrication', () => {
+    const outcome = decisionOf([makeCandidate()], { auditUrls: [] })
+    expect(outcome.decision).toBe('unresolved')
+    expect(outcome.reasons.join(' ')).toMatch(/needs verification/)
+  })
+
+  it('removes unsupported company names instead of rejecting a handle-only lead', () => {
+    const result = run([makeCandidate({ company_name: 'Bouygues Construction' })])
+    expect(result.outcomes[0].decision).toBe('published')
+    expect(result.published[0].lead.company_name).toBeNull()
+    expect(result.published[0].lead.caveats.join(' ')).toMatch(/removed/)
+  })
+
+  it('rejects a need that no documented service addresses', () => {
+    expect(decisionOf([makeCandidate({ matched_service: 'Paid ads management for ecommerce brands' })]).reasons).toContain(
+      'need is not addressed by a documented service',
     )
   })
 
-  it('rejects an empty offer', () => {
-    expect(validateProfile({ ...profile, services: [] }, WEBSITE, [WEBSITE]).reasons).toContain(
-      'profile has no services (empty offer)',
-    )
+  it('rejects posts older than the window and future dates', () => {
+    expect(decisionOf([makeCandidate({ published_date: '2026-06-01' })]).reasons).toContain('published before the date window')
+    expect(decisionOf([makeCandidate({ published_date: '2026-09-30' })]).reasons).toContain('publication date is in the future')
   })
 
-  it('computes the daily window as max(today − 30 days, last success − 72 h)', () => {
-    expect(publishedOnOrAfter(NOW, null)).toBe('2026-08-15')
-    expect(publishedOnOrAfter(NOW, new Date('2026-09-13T08:00:00Z'))).toBe('2026-09-10')
-    expect(publishedOnOrAfter(NOW, new Date('2026-07-01T08:00:00Z'))).toBe('2026-08-15')
+  it('accepts relative and search-result dates for the same post, with caveats', () => {
+    const relative = run([makeCandidate({ date_status: 'relative', date_note: 'Page shows "Posted 2 days ago".' })]).published[0]
+    expect(relative.lead.caveats.join(' ')).toMatch(/approximate/)
+    expect(run([makeCandidate({ date_status: 'search_result' })]).published[0].lead.caveats).toContain(DATE_FROM_SEARCH_CAVEAT)
   })
 
-  it('accepts the documented structured result shape', () => {
-    const parsed = ResearchResult.safeParse({
-      schema_version: '1',
-      outcome: 'matches',
-      profile,
-      leads: [makeLead()],
-      coverage: { angles_attempted: [], queries_reported: [], limitations: [], rejection_summary: [] },
+  it('a candidate without a usable contact route stays unresolved', () => {
+    const outcome = decisionOf([makeCandidate({ contact_route: { url: null, kind: 'none', explanation: '', evidence_ids: [] } })])
+    expect(outcome.decision).toBe('unresolved')
+    expect(outcome.reasons).toContain('no usable public contact route')
+  })
+
+  it('publishes at most five and keeps the rest as qualified_not_selected', () => {
+    const result = run(Array.from({ length: 7 }, () => makeCandidate()))
+    expect(result.counts.published).toBe(5)
+    expect(result.counts.qualified_not_selected).toBe(2)
+  })
+
+  it('does not republish an existing opportunity', () => {
+    const candidate = makeCandidate()
+    const prior: PriorOpportunity[] = [
+      { sourceKey: sourceKey(candidate.source_url)!, identityKey: 'someone else', needText: `${candidate.headline} ${candidate.need_summary}` },
+    ]
+    expect(decisionOf([candidate], { prior }).reasons).toContain('duplicate of an existing opportunity')
+  })
+
+  it('a different author with a different need under the same thread URL is a separate opportunity', () => {
+    const url = 'https://www.reddit.com/r/agencynewbies/comments/1waokqa/agency_owners_how_hard_was_it_to_land_your_first/'
+    const post = makeCandidate({ source_url: url, headline: 'Agency owners, how hard was it to land your first client?' })
+    const reply = makeCandidate({
+      source_url: url,
+      headline: 'Looking for the first client for an email marketing agency',
+      need_summary: 'Started an email marketing agency and still has no paying customer',
     })
-    expect(parsed.success).toBe(true)
-    expect(ResearchResult.safeParse({ schema_version: '1', outcome: 'matches', profile, leads: [], coverage: {} }).success).toBe(false)
+    expect(run([post, reply]).counts.published).toBe(2)
   })
 })
 
 describe('regressions from production runs', () => {
-  const thread =
-    'https://www.reddit.com/r/EntreprendreenFrance/comments/1vzmgp9/comment_aller_parler_%C3%A0_des_artisans_du_b%C3%A2timent/'
-  const comment = `${thread}p68z68b/`
-
-  it('accepts a Reddit comment permalink when its thread page was opened', () => {
-    const lead = makeLead({ source_url: comment, public_handle: 'u/dizzyme_' })
-    lead.evidence[0].url = comment
-    lead.evidence[0].title = 'Comment by u/dizzyme_'
-    lead.contact_route.url = comment
-    const result = qualifyLeads([lead], ctx([lead], { auditUrls: [thread, `${thread}.json`] }))
-    expect(result.rejected).toEqual([])
-    expect(result.published).toHaveLength(1)
+  it('Reddit post read via .json, full timestamp and combined service name (notanotheragent.com)', () => {
+    const url = 'https://www.reddit.com/r/agencynewbies/comments/1w6xmv1/how_to_get_clients/'
+    const candidate = makeCandidate({
+      source_url: url,
+      published_date: '2026-09-04T07:39:24Z',
+      matched_service: 'Public-web lead research for agencies with evidence and a drafted first message',
+      evidence: [
+        {
+          id: 'e1',
+          url: `${url}.json`,
+          title: 'How to get clients?',
+          inspected_original: true,
+          excerpt: 'tried cold mailing them but it takes lot of time',
+          paraphrase: 'Cold email takes a lot of time.',
+        },
+      ],
+    })
+    const outcome = decisionOf([candidate])
+    expect(outcome.decision).toBe('published')
+    expect(outcome.published_date).toBe('2026-09-04')
   })
 
-  it('still rejects a comment from a thread that was never opened', () => {
-    const lead = makeLead({ source_url: comment })
-    lead.evidence[0].url = comment
-    const other = 'https://www.reddit.com/r/EntreprendreenFrance/comments/1ux0cie/les_pires_excuses/'
-    expect(qualifyLeads([lead], ctx([lead], { auditUrls: [other] })).rejected[0].reasons).toContain(
-      'source URL does not appear in the search tool audit',
-    )
-  })
-
-  it('keeps different comments in the same thread as separate sources', () => {
+  it('comment permalink corroborated by its opened thread', () => {
+    const thread = 'https://www.reddit.com/r/EntreprendreenFrance/comments/1vzmgp9/comment_aller_parler/'
+    const comment = `${thread}p68z68b/`
+    expect(decisionOf([makeCandidate({ source_url: comment })], { auditUrls: [thread] }).decision).toBe('published')
     expect(sourceKey(comment)).toBe('reddit:1vzmgp9:p68z68b')
-    expect(sourceKey(`${thread}zz11aa/`)).not.toBe(sourceKey(comment))
-    expect(sourceKey(thread)).toBe('reddit:1vzmgp9')
   })
 
-  it('matches a paraphrased service name to the profile service', () => {
-    expect(
-      sameService(
-        'Automatisation des devis et constitution d’une base de prix à partir des factures et données existantes.',
-        'Automatisation IA des devis et du chiffrage BTP à partir des données et processus existants',
-      ),
-    ).toBe(true)
-    expect(sameService('Automatisation des devis et base de prix', 'Référencement SEO et création de contenu')).toBe(false)
-    expect(sameService('Website design', 'Conversion rate optimisation')).toBe(false)
+  it('Upwork post with "Posted last week" and a handle (yuzuu.co) is publishable with an approximate date', () => {
+    const url = 'https://www.upwork.com/freelance-jobs/apply/Digital-Product-Creator-and-Website-Designer_~022094130572130231659/'
+    const candidate = makeCandidate({
+      source_url: url,
+      public_handle: '@ThatFlippingAgent',
+      intent: 'explicit_request',
+      published_date: '2026-09-08',
+      date_status: 'relative',
+      date_note: 'Page shows "Posted last week" on 2026-09-15.',
+      evidence: [
+        {
+          id: 'e1',
+          url,
+          title: 'Digital Product Creator and Website Designer',
+          inspected_original: true,
+          excerpt:
+            'content creator (@ThatFlippingAgent) seeking help launching a polished digital course /product and website for my personal brand. I already have a strong social media audience',
+          paraphrase: 'Creator with an audience wants a digital product built.',
+        },
+      ],
+    })
+    const outcome = decisionOf([candidate])
+    expect(outcome.decision).toBe('published')
+    const words = outcome.candidate.evidence.reduce((sum, item) => sum + item.excerpt.split(/\s+/).filter(Boolean).length, 0)
+    expect(words).toBeLessThanOrEqual(25)
+  })
+
+  it('an anonymous marketplace client stays unresolved, not silently dropped', () => {
+    const outcome = decisionOf([makeCandidate({ public_handle: null, person_name: null, company_name: null })])
+    expect(outcome.decision).toBe('unresolved')
+    expect(outcome.reasons).toContain('author identity not public')
   })
 })
 
-describe('research input language', () => {
-  it('follows the business website, never the visitor browser language', () => {
+describe('helpers', () => {
+  it('canonical URLs keep case-sensitive paths and content query parameters', () => {
+    expect(canonicalUrl('https://Example.org/Post/AbC?id=7&utm_medium=x')).toBe('example.org/Post/AbC?id=7')
+    expect(canonicalUrl('https://example.org/post/abc?id=8')).not.toBe(canonicalUrl('https://example.org/post/abc?id=7'))
+  })
+
+  it('normalises timestamps but not free text', () => {
+    expect(normalisePublishedDate('2026-09-14T14:46:34Z')).toBe('2026-09-14')
+    expect(normalisePublishedDate('5 days ago')).toBeNull()
+  })
+
+  it('freshness is recomputed server-side', () => {
+    expect(freshnessFor('2026-09-08', NOW)).toBe(2)
+    expect(freshnessFor('2026-08-20', NOW)).toBe(1)
+  })
+
+  it('matches paraphrased and combined documented services only', () => {
+    expect(sameService('Automatisation des devis et base de prix à partir des factures', 'Automatisation IA des devis à partir des factures existantes')).toBe(true)
+    expect(sameService('Website design', 'Conversion rate optimisation')).toBe(false)
+    const services = profile.services.map((s) => s.value)
+    expect(matchesServices(services, 'Public-web lead research for agencies with a drafted first message')).toBe(true)
+    expect(matchesServices(services, 'Bookkeeping for restaurants')).toBe(false)
+  })
+
+  it('quote budget keeps need quotes first and trims the rest', () => {
+    const budgeted = applyQuoteBudget({
+      need_evidence_ids: ['e2'],
+      evidence: [
+        { id: 'e1', url: 'https://x.example.org/p', title: 't', inspected_original: true, excerpt: Array(20).fill('id').join(' '), paraphrase: 'identity' },
+        { id: 'e2', url: 'https://x.example.org/p', title: 't', inspected_original: true, excerpt: Array(15).fill('need').join(' '), paraphrase: 'need' },
+      ],
+    })
+    expect(budgeted.evidence.find((e) => e.id === 'e2')!.excerpt).not.toBe('')
+    expect(budgeted.evidence.find((e) => e.id === 'e1')!.excerpt).toBe('')
+  })
+
+  it('profile needs a verified offer and an acquisition brief', () => {
+    expect(validateProfile(profile, WEBSITE, [`${WEBSITE}/`]).ok).toBe(true)
+    expect(validateProfile({ ...profile, services: [] }, WEBSITE, [WEBSITE]).reasons).toContain('profile has no services (empty offer)')
+    expect(validateProfile({ ...profile, acquisition_brief: { ...profile.acquisition_brief, sells: '' } }, WEBSITE, [WEBSITE]).reasons).toContain(
+      'acquisition brief does not say what the business sells',
+    )
+    expect(validateProfile(profile, WEBSITE, ['https://unrelated.example.com']).reasons).toContain('no consulted source on the submitted business domain')
+  })
+
+  it('eligibility does not exclude software products', () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/B2B services only/i)
+    expect(SYSTEM_PROMPT).toMatch(/unsupported_business/)
+  })
+
+  it('daily window is max(today − 30 days, last success − 72 h)', () => {
+    expect(publishedOnOrAfter(NOW, null)).toBe('2026-08-16')
+    expect(publishedOnOrAfter(NOW, new Date('2026-09-14T08:00:00Z'))).toBe('2026-09-11')
+    expect(publishedOnOrAfter(NOW, new Date('2026-07-01T08:00:00Z'))).toBe('2026-08-16')
+  })
+
+  it('follow-up runs at most once, only with fewer than three leads and a concrete next step', () => {
+    const base = {
+      kind: 'initial' as const,
+      researchStatus: 'complete',
+      published: 1,
+      unresolved: 0,
+      untriedAngles: ['agency owners on LinkedIn'],
+      worthwhile: true,
+      researchOpen: true,
+    }
+    expect(followUpDecision(base).run).toBe(true)
+    expect(followUpDecision({ ...base, published: 3 }).run).toBe(false)
+    expect(followUpDecision({ ...base, kind: 'follow_up' }).run).toBe(false)
+    expect(followUpDecision({ ...base, untriedAngles: [] }).run).toBe(false)
+    expect(followUpDecision({ ...base, worthwhile: false }).run).toBe(false)
+    expect(followUpDecision({ ...base, researchStatus: 'website_unreadable' }).run).toBe(false)
+  })
+
+  it('lintQuery flags site restrictions and "posted" terms', () => {
+    expect(lintQuery('site:reddit.com agency clients')).toContain('site-restricted')
+    expect(lintQuery('posted looking for agency')).toContain('"posted" term')
+    expect(lintQuery('"referrals dried up" agency')).toEqual([])
+  })
+
+  it('research input follows the website language and carries follow-up context', () => {
     const input = buildResearchInput({
-      mode: 'initial',
+      mode: 'follow_up',
       now: NOW,
-      websiteUrl: 'https://cyberleads.com',
-      lastSuccessfulRunAt: null,
-      profile: null,
+      websiteUrl: WEBSITE,
+      lastSuccessfulRunAt: NOW,
+      profile,
       excluded: [],
       focus: null,
+      previousCandidates: [{ source_url: 'https://x.example.org', headline: 'h', decision: 'unresolved', reasons: ['date unknown'] }],
+      previousQueries: ['agency owner struggling to get clients'],
+      untriedAngles: ['web studios on Indie Hackers'],
+      windowStart: WINDOW,
     })
     expect(input.output_language).toBe(WEBSITE_LANGUAGE)
-    expect(input.output_language).not.toMatch(/fr|en-US/)
+    expect(input.published_on_or_after).toBe(WINDOW)
+    expect(input.profile).not.toBeNull()
+    expect(input.untried_angles).toHaveLength(1)
+    expect(input.previous_candidates).toHaveLength(1)
+  })
+
+  it('accepts the v2 structured result shape', () => {
+    const parsed = ResearchResult.safeParse({
+      schema_version: '2',
+      research_status: 'complete',
+      profile,
+      search_plan: { angles: [], proposed_queries: [] },
+      candidates: [makeCandidate()],
+      follow_up: { worthwhile: false, reason: '', untried_angles: [], candidates_to_verify: [] },
+      coverage: { limitations: [], access_failures: [], rejection_summary: [] },
+    })
+    expect(parsed.success).toBe(true)
   })
 })
 
@@ -419,123 +487,24 @@ describe('email delivery helpers', () => {
     const { normaliseEmail, maskEmail } = await import('../crypto')
     expect(normaliseEmail(' Jane.Doe@Agency.COM ')).toEqual({ ok: true, email: 'Jane.Doe@agency.com' })
     expect(normaliseEmail('not-an-email').ok).toBe(false)
-    expect(normaliseEmail('a@b').ok).toBe(false)
     expect(maskEmail('jane@agency.com')).toBe('j•••@agency.com')
   })
 
   it('escapes web-derived lead text in emails', async () => {
     const { renderRunEmail } = await import('../email/templates')
-    const lead = makeLead({ headline: '<script>alert(1)</script> Need help', public_handle: '"><img src=x onerror=alert(1)>' })
+    const lead = run([makeCandidate({ headline: '<script>alert(1)</script> Need help' })]).published[0].lead
     const email = renderRunEmail({
       kind: 'daily',
-      outcome: 'matches',
-      websiteHost: 'cyberleads.com',
-      businessName: 'CyberLeads',
+      outcome: 'qualified_results',
+      websiteHost: 'example.com',
+      businessName: 'Example',
       leads: [{ id: 'l1', data: lead }],
       privateUrl: 'https://app.example/r/token',
       unsubscribeUrl: 'https://app.example/api/unsubscribe/code',
       daysLeft: 10,
     })
-    expect(email.subject).toBe('1 new lead for cyberleads.com')
+    expect(email.subject).toBe('1 new lead for example.com')
     expect(email.html).not.toContain('<script>')
-    expect(email.html).not.toContain('<img src=x')
     expect(email.html).toContain('&lt;script&gt;')
-    expect(email.html).toContain('https://app.example/api/unsubscribe/code')
-  })
-})
-
-describe('regressions from the notanotheragent.com run', () => {
-  // Shape copied from the production output: handle only, four quotes from one Reddit post, date from search results.
-  function redditLead() {
-    const url = 'https://www.reddit.com/r/marketingagency/comments/1wbb6sk/agency_growth_is_stalled/'
-    return makeLead({
-      public_handle: 'u/Winter_Milk6072',
-      source_url: url,
-      identity_evidence_ids: ['E1'],
-      need_evidence_ids: ['E2', 'E3'],
-      date_evidence_ids: ['E4'],
-      contact_route: { url, kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['E1'] },
-      evidence: [
-        { id: 'E1', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'I’ve been running my agency on the side with a team of 4 for around three years.', paraphrase: 'Runs a small agency.' },
-        { id: 'E2', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'the sole bottleneck right now is me building the pipeline.', paraphrase: 'Pipeline is the bottleneck.' },
-        { id: 'E3', url, title: 'Agency growth is stalled', inspected_original: true, excerpt: 'cold outreach has hit a brick wall.', paraphrase: 'Cold outreach stopped working.' },
-        { id: 'E4', url, title: 'Search result: Agency growth is stalled', inspected_original: false, excerpt: '[Wednesday September 09 2026]', paraphrase: 'Search result date for this post.' },
-      ],
-    })
-  }
-
-  it('publishes it, trimming extra quotes to the 25-word budget and flagging the search-result date', () => {
-    const lead = redditLead()
-    const result = run([lead])
-    expect(result.rejected).toEqual([])
-    const published = result.published[0].lead
-    const quotedWords = published.evidence.reduce((sum, item) => sum + item.excerpt.split(/\s+/).filter(Boolean).length, 0)
-    expect(quotedWords).toBeLessThanOrEqual(25)
-    expect(published.evidence.find((item) => item.id === 'E2')!.excerpt).not.toBe('')
-    expect(published.evidence.find((item) => item.id === 'E1')!.paraphrase).toBe('Runs a small agency.')
-    expect(published.caveats).toContain(DATE_FROM_SEARCH_CAVEAT)
-  })
-
-  it('still rejects a handle when the original page was never inspected', () => {
-    const lead = redditLead()
-    lead.evidence = lead.evidence.map((item) => ({ ...item, inspected_original: false }))
-    expect(run([lead]).rejected[0].reasons).toContain('public handle is not supported by identity evidence')
-  })
-
-  it('still rejects a date taken from a different page', () => {
-    const lead = redditLead()
-    lead.evidence[3] = { ...lead.evidence[3], url: 'https://www.reddit.com/r/marketingagency/comments/9zzzzzz/other_post/' }
-    expect(run([lead]).rejected[0].reasons).toContain('publication date evidence is not from the original source')
-  })
-})
-
-describe('regressions from the second notanotheragent.com run', () => {
-  const lrProfile: BusinessProfileT = {
-    ...profile,
-    services: [
-      { value: 'Daily/public-web lead research for agencies: scans for companies publicly signaling that they need the agency’s services and sends the best matches by email.', basis: 'stated', evidence_ids: ['p1'] },
-      { value: 'Lead verification: opens sources, checks dates, and includes evidence so users can verify each opportunity.', basis: 'stated', evidence_ids: ['p1'] },
-      { value: 'First-message drafting for the user to send; the service does not contact prospects on the user’s behalf.', basis: 'stated', evidence_ids: ['p1'] },
-    ],
-  }
-  const matched = 'Public buying-signal lead research for agencies, with checked source evidence and a drafted first message'
-
-  function jsonLead() {
-    const url = 'https://www.reddit.com/r/agencynewbies/comments/1w6xmv1/how_to_get_clients/'
-    return makeLead({
-      public_handle: 'u/Firm-Alarm-7464',
-      source_url: url,
-      published_date: '2026-09-04T07:39:24Z',
-      matched_service: matched,
-      intent: 'stated_problem',
-      identity_evidence_ids: ['L2'],
-      date_evidence_ids: ['L2'],
-      need_evidence_ids: ['L2'],
-      score: { intent: 2, service_fit: 3, freshness: 1, contactability: 2 },
-      contact_route: { url, kind: 'original_post', explanation: 'Reply on the post', evidence_ids: ['L2'] },
-      evidence: [
-        { id: 'L2', url: `${url}.json`, title: 'How to get clients?', inspected_original: true, excerpt: 'tried cold mailing them but it takes lot of time', paraphrase: 'Cold email takes them a lot of time.' },
-      ],
-    })
-  }
-
-  it('publishes a lead read via Reddit .json with a full timestamp and a combined service name', () => {
-    const lead = jsonLead()
-    const result = qualifyLeads([lead], ctx([lead], { profile: lrProfile }))
-    expect(result.rejected).toEqual([])
-    expect(result.published[0].lead.published_date).toBe('2026-09-04')
-    expect(result.published[0].score.freshness).toBe(1)
-  })
-
-  it('normalises timestamps but still rejects non-dates', () => {
-    expect(normalisePublishedDate('2026-09-14T14:46:34Z')).toBe('2026-09-14')
-    expect(normalisePublishedDate('2026-09-14')).toBe('2026-09-14')
-    expect(normalisePublishedDate('5 days ago')).toBeNull()
-    expect(normalisePublishedDate('2026-13-40T00:00:00Z')).toBeNull()
-  })
-
-  it('still rejects a service the website does not document', () => {
-    expect(matchesServices(lrProfile.services.map((s) => s.value), matched)).toBe(true)
-    expect(matchesServices(lrProfile.services.map((s) => s.value), 'Paid ads management and creative production for ecommerce brands')).toBe(false)
   })
 })

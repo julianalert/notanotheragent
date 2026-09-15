@@ -3,6 +3,7 @@ import { config } from './config'
 import { query, transaction } from './db'
 import type { RadarRow, RunRow } from './radars'
 import {
+  MAX_CANDIDATES,
   PROMPT_VERSION,
   ResearchResult,
   SCHEMA_VERSION,
@@ -12,9 +13,17 @@ import {
   type ResearchResultT,
   type RunOutcome,
 } from './research/contract'
-import { isResearchOpen, qualifyLeads, validateProfile, type QualifiedLead } from './research/gates'
-import { buildResearchInput, type ExcludedOpportunity } from './research/prompt'
-import { getProvider, isRetryable, ResearchError, type ErrorCode, type ResearchProvider, type Usage } from './research/provider'
+import { followUpDecision, isResearchOpen, qualifyCandidates, validateProfile } from './research/gates'
+import { buildResearchInput, lintQuery, type ExcludedOpportunity, type PreviousCandidate } from './research/prompt'
+import {
+  getProvider,
+  isRetryable,
+  ResearchError,
+  type ErrorCode,
+  type ResearchProvider,
+  type ToolAction,
+  type Usage,
+} from './research/provider'
 import { sendPendingEmails } from './email/deliver'
 import { localDateKey, nextDailyRunAt } from './time'
 
@@ -149,8 +158,8 @@ async function startRun(run: RunRow) {
     await release(run.id, 10 * 60 * 1000)
     return
   }
-  if (run.kind === 'daily' && !radar.profile) {
-    await finishFailed(run.id, 'provider_failed', 'Radar has no validated profile for a daily run')
+  if (run.kind !== 'initial' && !radar.profile) {
+    await finishFailed(run.id, 'provider_failed', `Radar has no validated profile for a ${run.kind} run`)
     return
   }
 
@@ -162,8 +171,37 @@ async function startRun(run: RunRow) {
       [radar.id],
     ),
   ])
+  // A follow-up receives the previous run's candidates, queries and untried angles, and searches the same window.
+  let followUp: { previousCandidates: PreviousCandidate[]; previousQueries: string[]; untriedAngles: string[]; windowStart?: string } = {
+    previousCandidates: [],
+    previousQueries: [],
+    untriedAngles: [],
+  }
+  if (run.kind === 'follow_up' && run.parent_run_id) {
+    const [parent] = await query<{ diagnostics: RunDiagnostics | null; published_on_or_after: Date | string | null }>(
+      `select diagnostics, published_on_or_after from research_runs where id = $1`,
+      [run.parent_run_id],
+    )
+    const candidates = await query<{ source_url: string; headline: string; decision: string; model_decision: PreviousCandidate['decision']; reasons: string[] }>(
+      `select source_url, headline, decision, model_decision, reasons from research_candidates where run_id = $1`,
+      [run.parent_run_id],
+    )
+    followUp = {
+      previousCandidates: candidates.map((c) => ({
+        source_url: c.source_url,
+        headline: c.headline,
+        decision: c.decision === 'published' || c.decision === 'qualified_not_selected' ? 'qualified' : (c.decision as PreviousCandidate['decision']),
+        reasons: c.reasons,
+      })),
+      previousQueries: [...new Set([...(parent?.diagnostics?.proposed_queries ?? []), ...(parent?.diagnostics?.executed_searches ?? [])])],
+      untriedAngles: parent?.diagnostics?.follow_up?.untried_angles ?? [],
+      windowStart: parent?.published_on_or_after ? new Date(parent.published_on_or_after).toISOString().slice(0, 10) : undefined,
+    }
+  }
+
   const input = buildResearchInput({
     mode: run.kind,
+    ...followUp,
     now,
     websiteUrl: radar.website,
     lastSuccessfulRunAt: lastSuccess,
@@ -273,7 +311,7 @@ async function checkRun(run: RunRow) {
     return
   }
 
-  await saveResults(run, result, inspection.auditUrls, usage, inspection.raw, repairUsed)
+  await saveResults(run, result, inspection.auditUrls, inspection.actions, usage, inspection.raw, repairUsed)
 }
 
 function addUsage(a: Usage, b: Usage): Usage {
@@ -313,40 +351,79 @@ async function parseResult(text: string, provider: ResearchProvider, researchOpe
 
 /* ---------------------------------- Save ---------------------------------- */
 
+/** Internal per-run diagnostics (research_runs.diagnostics). Never returned by public routes. */
+export type RunDiagnostics = {
+  model: string
+  prompt_version: string
+  schema_version: string
+  research_status: ResearchResultT['research_status']
+  acquisition_brief: BusinessProfileT['acquisition_brief'] | null
+  angles: string[]
+  proposed_queries: string[]
+  executed_searches: string[]
+  executed_actions: ToolAction[]
+  opened_pages: number
+  query_issues: Array<{ query: string; issues: string[] }>
+  counts: { discovered: number; published: number; qualified_not_selected: number; unresolved: number; rejected: number }
+  candidates_truncated: number
+  profile_reasons: string[]
+  access_failures: string[]
+  limitations: string[]
+  rejection_summary: string[]
+  follow_up: {
+    suggested: boolean
+    reason: string
+    untried_angles: string[]
+    candidates_to_verify: string[]
+    decision: { run: boolean; reason: string }
+    run_id: string | null
+  }
+  format_repair_used: boolean
+}
+
 async function saveResults(
   run: RunRow,
   result: ResearchResultT,
   auditUrls: string[],
+  actions: ToolAction[],
   usage: Usage,
   raw: unknown,
   repairUsed: boolean,
 ) {
   const radar = await getRadar(run.radar_id)
   const now = new Date()
-  const report: Record<string, unknown> = { model_outcome: result.outcome, returned_leads: result.leads.length }
+  const provider = getProvider()
 
   let outcome: RunOutcome | null = null
   let profile: BusinessProfileT | null = run.kind === 'initial' ? null : radar.profile
+  let profileToSave: BusinessProfileT | null = null
+  const profileReasons: string[] = []
 
   if (run.kind === 'initial') {
-    if (result.outcome === 'website_unreadable') outcome = 'website_unreadable'
-    else if (result.outcome === 'unsupported_business') outcome = 'unsupported_business'
+    if (result.research_status === 'website_unreadable') outcome = 'website_unreadable'
+    else if (result.research_status === 'unsupported_business') outcome = 'unsupported_business'
     else {
       const check = validateProfile(result.profile, radar.website, auditUrls)
-      report.profile_reasons = check.reasons
-      if (check.ok) profile = result.profile
-      else outcome = 'validation_failed'
+      profileReasons.push(...check.reasons)
+      if (check.ok) profile = profileToSave = result.profile
     }
+    if (!outcome && !profile) {
+      // The research ran but the offer could not be verified from the website: a failed run the user can retry.
+      await finishFailed(run.id, 'profile_unverified', `Profile failed verification: ${profileReasons.join('; ')}`, usage, raw)
+      return
+    }
+  } else if (profile && !profile.acquisition_brief && result.profile?.acquisition_brief) {
+    // Profiles saved before research-v2 gain the brief once; website facts stay as they were.
+    profile = profileToSave = { ...profile, acquisition_brief: result.profile.acquisition_brief }
   }
 
-  let published: QualifiedLead[] = []
-  let held: QualifiedLead[] = []
+  let qualified: ReturnType<typeof qualifyCandidates> | null = null
   if (profile && !outcome) {
     const prior = await query<{ source_key: string; identity_key: string; need_text: string; run_id: string }>(
       `select source_key, identity_key, need_text, run_id from leads where radar_id = $1`,
       [radar.id],
     )
-    const qualified = qualifyLeads(result.leads, {
+    qualified = qualifyCandidates(result.candidates.slice(0, MAX_CANDIDATES), {
       now,
       publishedOnOrAfter: run.published_on_or_after
         ? new Date(run.published_on_or_after).toISOString().slice(0, 10)
@@ -359,37 +436,93 @@ async function saveResults(
         .filter((lead) => lead.run_id !== run.id)
         .map((lead) => ({ sourceKey: lead.source_key, identityKey: lead.identity_key, needText: lead.need_text })),
     })
-    published = qualified.published
-    held = qualified.held
-    report.rejected = qualified.rejected
-    report.held = held.map((lead) => ({ source_url: lead.sourceUrl, reason: lead.heldReason }))
-
-    if (result.outcome === 'insufficient_coverage') outcome = 'insufficient_coverage'
-    else if (result.leads.length > 0 && published.length + held.length === 0) outcome = 'validation_failed'
-    else if (published.length > 0) outcome = 'matches'
-    else outcome = 'no_matches'
+    const { counts } = qualified
+    if (counts.published > 0) outcome = 'qualified_results'
+    else if (result.research_status === 'incomplete') outcome = 'research_incomplete'
+    else if (counts.unresolved > 0) outcome = 'candidates_unresolved'
+    else if (counts.discovered > 0) outcome = 'candidates_rejected'
+    else outcome = 'no_candidates'
   }
+
+  const published = qualified?.published ?? []
+  const followUp = followUpDecision({
+    kind: run.kind,
+    researchStatus: result.research_status,
+    published: published.length,
+    unresolved: qualified?.counts.unresolved ?? 0,
+    untriedAngles: result.follow_up.untried_angles,
+    worthwhile: result.follow_up.worthwhile,
+    researchOpen: isResearchOpen(now, new Date(radar.research_ends_at)) && Boolean(profile),
+  })
+
+  const executedSearches = actions.filter((action) => action.query).map((action) => action.query!)
+  const diagnostics: RunDiagnostics = {
+    model: provider.model,
+    prompt_version: PROMPT_VERSION,
+    schema_version: SCHEMA_VERSION,
+    research_status: result.research_status,
+    acquisition_brief: profile?.acquisition_brief ?? result.profile?.acquisition_brief ?? null,
+    angles: result.search_plan.angles,
+    proposed_queries: result.search_plan.proposed_queries,
+    executed_searches: executedSearches,
+    executed_actions: actions,
+    opened_pages: actions.filter((action) => action.type === 'open_page').length,
+    query_issues: executedSearches.map((q) => ({ query: q, issues: lintQuery(q) })).filter((q) => q.issues.length),
+    counts: qualified?.counts ?? { discovered: result.candidates.length, published: 0, qualified_not_selected: 0, unresolved: 0, rejected: 0 },
+    candidates_truncated: Math.max(0, result.candidates.length - MAX_CANDIDATES),
+    profile_reasons: profileReasons,
+    access_failures: result.coverage.access_failures,
+    limitations: result.coverage.limitations,
+    rejection_summary: result.coverage.rejection_summary,
+    follow_up: {
+      suggested: result.follow_up.worthwhile,
+      reason: result.follow_up.reason,
+      untried_angles: result.follow_up.untried_angles,
+      candidates_to_verify: result.follow_up.candidates_to_verify,
+      decision: followUp,
+      run_id: null,
+    },
+    format_repair_used: repairUsed,
+  }
+
+  // Emails: an initial run whose follow-up will run defers its email to the follow-up, so the user gets one
+  // "first results" email with everything. Daily runs and other follow-ups email only when there is news.
+  let parentKind: string | null = null
+  if (run.kind === 'follow_up' && run.parent_run_id) {
+    parentKind = (await query<{ kind: string }>(`select kind from research_runs where id = $1`, [run.parent_run_id]))[0]?.kind ?? null
+  }
+  const emailStatus =
+    run.kind === 'initial'
+      ? followUp.run
+        ? 'skipped'
+        : 'pending'
+      : published.length > 0 || parentKind === 'initial'
+        ? 'pending'
+        : 'skipped'
 
   const cost =
     (usage.input_tokens / 1e6) * config.cost.inputPerMTok +
     (usage.output_tokens / 1e6) * config.cost.outputPerMTok +
     usage.web_search_calls * config.cost.perWebSearch
 
-  // Profile, leads and run outcome persist atomically. The page counts inserted records, not model claims.
+  // Profile, leads, candidates, follow-up and run outcome persist atomically.
   await transaction(async (tx) => {
     if (run.kind === 'initial') {
       const nextRun = profile ? nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour) : null
       await tx.query(`update radars set profile = $2, next_run_at = coalesce(next_run_at, $3) where id = $1`, [
         radar.id,
-        profile ? JSON.stringify(profile) : null,
+        profileToSave ? JSON.stringify(profileToSave) : null,
         nextRun,
       ])
+    } else if (profileToSave) {
+      await tx.query(`update radars set profile = $2 where id = $1`, [radar.id, JSON.stringify(profileToSave)])
     }
-    for (const lead of [...published, ...held]) {
+
+    for (const lead of published) {
       await tx.query(
         `insert into leads (radar_id, run_id, source_url, source_key, identity_key, need_text, published_date, intent,
-           score_total, discovered_at, data, held_reason)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           score_total, discovered_at, data)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          on conflict (radar_id, source_key) do nothing`,
         [
           radar.id,
@@ -402,15 +535,51 @@ async function saveResults(
           lead.lead.intent,
           lead.score.total,
           now,
-          JSON.stringify(lead.lead),
-          lead.heldReason,
+          JSON.stringify(lead.lead satisfies LeadT),
         ],
       )
     }
+
+    await tx.query(`delete from research_candidates where run_id = $1`, [run.id])
+    for (const candidate of qualified?.outcomes ?? []) {
+      await tx.query(
+        `insert into research_candidates (run_id, radar_id, source_url, source_key, headline, decision, model_decision,
+           reasons, date_status, published_date, score_total, data)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          run.id,
+          radar.id,
+          candidate.source_url,
+          candidate.source_key,
+          candidate.headline.slice(0, 500),
+          candidate.decision,
+          candidate.model_decision,
+          JSON.stringify(candidate.reasons),
+          candidate.date_status,
+          candidate.published_date,
+          candidate.score.total,
+          JSON.stringify(candidate.candidate),
+        ],
+      )
+    }
+
+    if (followUp.run) {
+      // One follow-up per run (unique run_key), only while research is open.
+      const [created] = await tx.query<{ id: string }>(
+        `insert into research_runs (radar_id, kind, run_key, status, scheduled_at, parent_run_id)
+         select $1, 'follow_up', $2, 'queued', now(), $3
+         where exists (select 1 from radars where id = $1 and research_ends_at > now())
+         on conflict (radar_id, kind, run_key) do nothing
+         returning id`,
+        [radar.id, `follow_up:${run.id}`, run.id],
+      )
+      diagnostics.follow_up.run_id = created?.id ?? null
+    }
+
     await tx.query(
       `update research_runs set status = 'completed', outcome = $2, usage = $3, cost_usd = $4, coverage = $5,
          audit_urls = $6, validation_report = $7, raw_response = $8, format_repair_used = $9, email_status = $10,
-         error_code = null, error = null, completed_at = now(), lease_until = null,
+         diagnostics = $11, error_code = null, error = null, completed_at = now(), lease_until = null,
          duration_ms = (extract(epoch from (now() - started_at)) * 1000)::int
        where id = $1`,
       [
@@ -418,13 +587,21 @@ async function saveResults(
         outcome,
         JSON.stringify(usage),
         cost.toFixed(4),
-        JSON.stringify(result.coverage),
+        JSON.stringify({ ...result.coverage, queries_reported: result.search_plan.proposed_queries }),
         JSON.stringify(auditUrls),
-        JSON.stringify(report),
+        JSON.stringify({
+          model_outcome: result.research_status,
+          returned_leads: result.candidates.length,
+          rejected: (qualified?.outcomes ?? [])
+            .filter((c) => c.decision !== 'published')
+            .map((c) => ({ headline: c.headline, source_url: c.source_url, decision: c.decision, reasons: c.reasons })),
+          held: [],
+          profile_reasons: profileReasons,
+        }),
         JSON.stringify(raw ?? null),
         repairUsed,
-        // First results are always emailed (they may have closed the tab); daily runs only when there's news.
-        run.kind === 'initial' || published.length > 0 ? 'pending' : 'skipped',
+        emailStatus,
+        JSON.stringify(diagnostics),
       ],
     )
   })
@@ -433,11 +610,11 @@ async function saveResults(
     run: run.id,
     kind: run.kind,
     outcome,
-    published: published.length,
-    held: held.length,
-    rejected: Array.isArray(report.rejected) ? report.rejected.length : 0,
+    ...diagnostics.counts,
+    executed_searches: executedSearches.length,
+    opened_pages: diagnostics.opened_pages,
+    follow_up: followUp.run ? 'scheduled' : followUp.reason,
     cost_usd: Number(cost.toFixed(4)),
-    web_searches: usage.web_search_calls,
     format_repair: repairUsed,
   })
 }
