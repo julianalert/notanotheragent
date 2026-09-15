@@ -104,11 +104,13 @@ create table if not exists leads (
   data jsonb not null,
   held_reason text,
   user_status text not null default 'new' check (user_status in ('new', 'contacted', 'dismissed')),
+  user_status_at timestamptz,
   created_at timestamptz not null default now(),
   unique (radar_id, source_key)
 );
 
 create index if not exists leads_radar_idx on leads (radar_id, discovered_at desc);
+alter table leads add column if not exists user_status_at timestamptz;
 
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (

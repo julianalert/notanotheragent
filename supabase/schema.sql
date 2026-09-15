@@ -83,6 +83,7 @@ create table if not exists public.leads (
   data jsonb not null,
   held_reason text,
   user_status text not null default 'new' check (user_status in ('new', 'contacted', 'dismissed')),
+  user_status_at timestamptz,
   created_at timestamptz not null default now(),
   unique (radar_id, source_key)
 );

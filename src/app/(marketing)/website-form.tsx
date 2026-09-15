@@ -5,6 +5,7 @@ import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import { clsx } from 'clsx/lite'
 import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
+import { createRadar, displayHost } from '@/lib/client/radar-forms'
 import { EmailForm } from './email-form'
 
 export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
@@ -25,32 +26,18 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
     }
     setPending(true)
     setError(null)
-    try {
-      const response = await fetch('/api/radars', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          website: value,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          language: navigator.language,
-        }),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok || !body.token) {
-        setError(body.error ?? 'Something went wrong. Please try again.')
-        setPending(false)
-        return
-      }
-      if (body.hasEmail) {
-        router.push(`/r/${body.token}`)
-        return
-      }
-      setStarted({ token: body.token, host: value.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '') })
+    const result = await createRadar(value)
+    if (!result.ok) {
+      setError(result.error)
       setPending(false)
-    } catch {
-      setError('We could not reach the server. Check your connection and try again.')
-      setPending(false)
+      return
     }
+    if (result.hasEmail) {
+      router.push(`/r/${result.token}`)
+      return
+    }
+    setStarted({ token: result.token, host: displayHost(value) })
+    setPending(false)
   }
 
   if (started) {
@@ -117,7 +104,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
         </p>
       )}
       <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
-        Free lead research for 14 days. No account needed.
+        🔥 Free lead research for 14 days. No account needed.
       </p>
     </form>
   )

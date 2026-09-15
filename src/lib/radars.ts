@@ -42,6 +42,7 @@ export type RunRow = {
   error_code: string | null
   outcome: RunOutcome | null
   coverage: { limitations: string[] } | null
+  candidates: number | null
   created_at: Date
 }
 
@@ -52,6 +53,7 @@ type LeadRow = {
   data: LeadT
   score_total: number
   user_status: 'new' | 'contacted' | 'dismissed'
+  user_status_at: Date | null
 }
 
 export type RunView = {
@@ -67,6 +69,8 @@ export type RunView = {
   completedAt: string | null
   runKey: string
   limitations: string[]
+  /** Candidates the research returned before the evidence gates (null for runs without a report). */
+  candidates: number | null
 }
 
 export type LeadView = {
@@ -74,6 +78,7 @@ export type LeadView = {
   runId: string
   discoveredAt: string
   status: LeadRow['user_status']
+  statusAt: string | null
   data: LeadT
 }
 
@@ -184,6 +189,7 @@ function toRunView(run: RunRow | undefined, expired: boolean): RunView | null {
     completedAt: iso(run.completed_at),
     runKey: run.run_key,
     limitations: run.coverage?.limitations ?? [],
+    candidates: run.candidates,
   }
 }
 
@@ -200,13 +206,14 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   const [runs, leads] = await Promise.all([
     query<RunRow>(
       `select id, radar_id, kind, run_key, status, provider_response_id, published_on_or_after, scheduled_at, started_at,
-         completed_at, retry_count, manual_retry_count, error_code, outcome, coverage, created_at
+         completed_at, retry_count, manual_retry_count, error_code, outcome, coverage, created_at,
+         (validation_report->>'returned_leads')::int as candidates
        from research_runs where radar_id = $1 order by created_at desc`,
       [radar.id],
     ),
     // Held (probable duplicate) leads are stored for review but never displayed.
     query<LeadRow>(
-      `select id, run_id, discovered_at, data, score_total, user_status
+      `select id, run_id, discovered_at, data, score_total, user_status, user_status_at
        from leads where radar_id = $1 and held_reason is null
        order by discovered_at desc, score_total desc, published_date desc`,
       [radar.id],
@@ -256,6 +263,7 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
       runId: lead.run_id,
       discoveredAt: iso(lead.discovered_at)!,
       status: lead.user_status,
+      statusAt: iso(lead.user_status_at),
       data: lead.data,
     })),
     slowRunThresholdMs: config.slowRunThresholdMs,
@@ -267,7 +275,8 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
 }
 
 export async function updateLeadStatus(radarId: string, leadId: string, status: LeadRow['user_status']) {
-  const rows = await query(`update leads set user_status = $3 where id = $2 and radar_id = $1 returning id`, [
+  const rows = await query(`update leads set user_status = $3, user_status_at = case when $3 = 'new' then null else now() end
+     where id = $2 and radar_id = $1 returning id`, [
     radarId,
     leadId,
     status,

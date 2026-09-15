@@ -66,7 +66,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
               />
             ) : undefined
           }
-          headline="Wake up to companies that need exactly what your agency sells."
+          headline="Wake up to companies that need exactly what your agency sells"
           subheadline={
             <p>
               We scan the web for companies publicly signaling they need your services and send the best matches to

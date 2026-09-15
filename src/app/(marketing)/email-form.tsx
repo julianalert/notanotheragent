@@ -1,6 +1,7 @@
 'use client'
 
 import { Button } from '@/components/elements/button'
+import { saveEmail } from '@/lib/client/radar-forms'
 import { clsx } from 'clsx/lite'
 import { useId, useState, type FormEvent } from 'react'
 
@@ -28,23 +29,13 @@ export function EmailForm({
     }
     setPending(true)
     setError(null)
-    try {
-      const response = await fetch('/api/radar/email', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'x-radar-token': token },
-        body: JSON.stringify({ email: value }),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        setError(body.error ?? 'Something went wrong. Please try again.')
-        setPending(false)
-        return
-      }
-      onSaved()
-    } catch {
-      setError('We could not reach the server. Check your connection and try again.')
+    const result = await saveEmail(token, value)
+    if (!result.ok) {
+      setError(result.error)
       setPending(false)
+      return
     }
+    onSaved()
   }
 
   return (

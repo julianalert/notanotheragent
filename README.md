@@ -2,6 +2,11 @@
 
 A visitor enters their business website. Lead Radar reads it, researches public buying signals with OpenAI's hosted web search, and shows up to five evidenced leads, each with an outreach draft, on a private link. Research runs every morning for 14 days from creation.
 
+Two design systems:
+
+- **Marketing** (`src/app/(marketing)`): the Oatmeal kit (Tailwind Plus).
+- **Desk** (`src/app/(desk)`): the private radar app (searching, no results, leads), styled by `src/app/(desk)/desk.css`. Keyboard: `j`/`k` move, `Enter` opens, `c` contacted, `x` dismiss, `Esc` closes.
+
 Built with Next.js 16 and a small subset of the Oatmeal (Tailwind Plus) design system in `src/components`. Those components are used under the [Tailwind Plus license](https://tailwindcss.com/plus/license) as part of this application and are not licensed for reuse on their own.
 
 ## Run locally
