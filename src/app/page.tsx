@@ -58,9 +58,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
                 text={<>Your radar for {existing.website_host} is saved in this browser</>}
                 cta="Open results"
               />
-            ) : (
-              <AnnouncementBadge href="#how-it-works" text="Free lead research for 14 days" cta="How it works" />
-            )
+            ) : undefined
           }
           headline="Wake up to companies that need exactly what your agency sells."
           subheadline={
