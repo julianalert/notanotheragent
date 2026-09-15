@@ -37,9 +37,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
         }
         actions={
           existing ? (
-            <ButtonLink href={`/r/${token}`}>Open my radar</ButtonLink>
+            <ButtonLink href={`/r/${token}`} color="accent">
+              Open my radar
+            </ButtonLink>
           ) : (
-            <ButtonLink href="#start" className="max-sm:hidden">
+            <ButtonLink href="#start" color="accent" className="max-sm:hidden">
               Find my first leads
             </ButtonLink>
           )
@@ -222,7 +224,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           subheadline={<p>Enter your website and your first leads are usually ready in a few minutes.</p>}
           cta={
             <div className="flex items-center gap-4">
-              <ButtonLink href="#start" size="lg">
+              <ButtonLink href="#start" size="lg" color="accent">
                 Find my first leads
               </ButtonLink>
               <PlainButtonLink href="#how-it-works" size="lg">
