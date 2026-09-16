@@ -4,7 +4,7 @@ import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import type { RadarView } from '@/lib/radars'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { longDay, relativeMoment } from './lib'
+import { relativeDay, relativeMoment } from './lib'
 
 export type DeskView = 'today' | 'contacted' | 'dismissed'
 
@@ -12,6 +12,7 @@ export function Rail({
   view,
   currentView,
   counts,
+  foundToday,
   viewsEnabled,
   activating,
   onView,
@@ -19,12 +20,12 @@ export function Rail({
   onTimezoneChange,
   onActivate,
   onPortal,
-  onToggleSource,
   onWebhook,
 }: {
   view: RadarView
   currentView: DeskView
   counts: Record<DeskView, number>
+  foundToday: number
   viewsEnabled: boolean
   activating: boolean
   onView: (view: DeskView) => void
@@ -32,7 +33,6 @@ export function Rail({
   onTimezoneChange: (timezone: string) => Promise<void>
   onActivate: () => void
   onPortal: () => void
-  onToggleSource: (id: string, enabled: boolean) => Promise<void>
   onWebhook: (url: string) => Promise<string | null>
 }) {
   const [editingTz, setEditingTz] = useState(false)
@@ -43,6 +43,8 @@ export function Rail({
   const zones = useMemo(() => (editingTz ? Intl.supportedValuesOf('timeZone') : []), [editingTz])
   const firstSearchDone = view.initialRun?.status === 'completed' && Boolean(view.profileServices.length)
   const canActivate = view.billingConfigured && firstSearchDone && view.plan !== 'active'
+  const canManageBilling = view.billingConfigured && view.plan !== 'free'
+  const liveSummary = `lead${foundToday === 1 ? '' : 's'} found today${view.nextRunAt ? `, next search ${relativeDay(view.nextRunAt, view.now, view.timezone)}` : ''}`
 
   // Close the mobile/tablet burger menu when clicking anywhere outside it.
   useEffect(() => {
@@ -69,16 +71,17 @@ export function Rail({
         {view.plan === 'past_due' ? 'Agent live · payment failed' : 'Agent live'}
       </span>
       <p className="days">
-        {view.watchedSources.filter((source) => source.enabled).length || '—'}
-        <small>
-          {view.watchedSources.length ? 'sources watched through the day' : 'sources: learning where your buyers post'}
-          {view.currentPeriodEnd && <>, renews {longDay(view.currentPeriodEnd, view.timezone)}</>}
-        </small>
+        {foundToday}
+        <small>{liveSummary}</small>
       </p>
-      {view.plan === 'past_due' && <p className="rail-warn">Your last payment failed. Update your card to keep the agent running.</p>}
-      <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
-        {view.plan === 'past_due' ? 'Update card' : 'Manage billing'}
-      </button>
+      {view.plan === 'past_due' && (
+        <>
+          <p className="rail-warn">Your last payment failed. Update your card to keep the agent running.</p>
+          <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
+            Update card
+          </button>
+        </>
+      )}
     </>
   ) : (
     <>
@@ -110,11 +113,6 @@ export function Rail({
       ) : (
         <p className="rail-muted">{firstSearchDone ? 'Activation is not available yet.' : 'Available once your first search is done.'}</p>
       )}
-      {view.plan !== 'free' && view.billingConfigured && (
-        <button type="button" className="link rail-billing-history" onClick={onPortal} style={{ marginTop: 8 }}>
-          Billing history
-        </button>
-      )}
     </>
   )
 
@@ -137,6 +135,43 @@ export function Rail({
               </button>
             ))}
           </nav>
+        )}
+
+        {viewsEnabled && view.agentLive && (
+          <div className="rail-facts">
+            <div>
+              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
+              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
+              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
+                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
+              </button>
+              {editingHook && (
+                <form
+                  className="rail-form"
+                  onSubmit={async (event) => {
+                    event.preventDefault()
+                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
+                    const problem = await onWebhook(url)
+                    setHookError(problem)
+                    if (!problem) setEditingHook(false)
+                  }}
+                >
+                  <label htmlFor="desk-webhook" className="sr-only">
+                    Webhook URL
+                  </label>
+                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
+                  <button type="submit" className="btn btn--line btn--sm">
+                    Save
+                  </button>
+                  {hookError && (
+                    <p role="alert" className="form-error">
+                      {hookError}
+                    </p>
+                  )}
+                </form>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Mobile/tablet only: nav + account actions combined into one menu (see desk.css breakpoints). */}
@@ -186,6 +221,18 @@ export function Rail({
                 Copy private link
                 <small className="menu-hint">Your way back to these leads, no password needed</small>
               </button>
+              {canManageBilling && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onPortal()
+                  }}
+                >
+                  Manage billing
+                </button>
+              )}
               <Link href="/#start" role="menuitem" onClick={() => setMenuOpen(false)}>
                 New search
               </Link>
@@ -193,8 +240,8 @@ export function Rail({
           )}
         </div>
 
-        {view.agentLive && (view.nextRunAt || view.watchedSources.length > 0) && (
-          <div className="rail-facts">
+        {view.agentLive && view.nextRunAt && (
+          <div className="rail-facts rail-facts--next">
             {view.nextRunAt && (
               <div>
                 <b>{capitalise(relativeMoment(view.nextRunAt, view.now, view.timezone))}</b>
@@ -226,59 +273,6 @@ export function Rail({
                 )}
               </div>
             )}
-            {view.watchedSources.length > 0 && (
-              <div>
-                <b>Watched sources</b>
-                <ul className="rail-sources">
-                  {view.watchedSources.map((source) => (
-                    <li key={source.id}>
-                      <label>
-                        <input type="checkbox" checked={source.enabled} onChange={(event) => onToggleSource(source.id, event.target.checked)} />
-                        <span>{source.label}</span>
-                        <em>{source.published ? `${source.published} lead${source.published === 1 ? '' : 's'}` : `${source.hits} seen`}</em>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-
-        {viewsEnabled && (
-          <div className="rail-facts rail-facts--hook">
-            <div>
-              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
-              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
-              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
-                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
-              </button>
-              {editingHook && (
-                <form
-                  className="rail-form"
-                  onSubmit={async (event) => {
-                    event.preventDefault()
-                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
-                    const problem = await onWebhook(url)
-                    setHookError(problem)
-                    if (!problem) setEditingHook(false)
-                  }}
-                >
-                  <label htmlFor="desk-webhook" className="sr-only">
-                    Webhook URL
-                  </label>
-                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
-                  <button type="submit" className="btn btn--line btn--sm">
-                    Save
-                  </button>
-                  {hookError && (
-                    <p role="alert" className="form-error">
-                      {hookError}
-                    </p>
-                  )}
-                </form>
-              )}
-            </div>
           </div>
         )}
 
@@ -290,11 +284,13 @@ export function Rail({
       {view.agentLive ? (
         <div className="mobile-agent-bar">
           <span className="mobile-agent-bar__text">
-            {view.plan === 'past_due' ? 'Payment failed — update your card to keep the agent running.' : 'Your agent is live and searching every morning.'}
+            {view.plan === 'past_due' ? 'Payment failed — update your card to keep the agent running.' : `${foundToday} ${liveSummary}`}
           </span>
-          <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
-            {view.plan === 'past_due' ? 'Update card' : 'Manage billing'}
-          </button>
+          {view.plan === 'past_due' && (
+            <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
+              Update card
+            </button>
+          )}
         </div>
       ) : (
         canActivate && (

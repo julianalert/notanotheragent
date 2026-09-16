@@ -367,15 +367,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     return null
   }
 
-  async function toggleSource(id: string, enabled: boolean) {
-    setView((current) => ({ ...current, watchedSources: current.watchedSources.map((source) => (source.id === id ? { ...source, enabled } : source)) }))
-    const response = await api('/sources', { method: 'PATCH', body: JSON.stringify({ id, enabled }) }).catch(() => null)
-    if (!response?.ok) {
-      showToast('We couldn’t save that change.')
-      refresh()
-    }
-  }
-
   async function copyPrivateLink() {
     if (!(await copyText(privateUrl))) return
     showToast('Link copied. Save it somewhere safe to come back anytime.')
@@ -398,6 +389,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
   const todayKey = localDateKey(view.now, view.timezone)
   const foundToday = view.leads.some((lead) => lead.status === 'new' && localDateKey(lead.discoveredAt, view.timezone) === todayKey)
+  const foundTodayCount = view.leads.filter((lead) => localDateKey(lead.discoveredAt, view.timezone) === todayKey).length
 
   let title: string
   if (screen === 'email') title = 'Your research has started'
@@ -467,11 +459,11 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           view={view}
           currentView={deskView}
           counts={counts}
+          foundToday={foundTodayCount}
           viewsEnabled={screen === 'leads'}
           activating={activating}
           onActivate={() => billing('/checkout')}
           onPortal={() => billing('/billing-portal')}
-          onToggleSource={toggleSource}
           onWebhook={saveWebhook}
           onCopyLink={copyPrivateLink}
           onView={(next) => {
@@ -528,6 +520,18 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                       }}
                     >
                       Adjust my research
+                    </button>
+                  )}
+                  {view.billingConfigured && view.plan !== 'free' && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setUserMenuOpen(false)
+                        billing('/billing-portal')
+                      }}
+                    >
+                      Manage billing
                     </button>
                   )}
                   <Link href="/#start" role="menuitem" onClick={() => setUserMenuOpen(false)}>

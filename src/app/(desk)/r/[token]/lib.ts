@@ -48,10 +48,14 @@ export function publishedAgo(date: string, now: string) {
 }
 
 /** "today at 10:59", "yesterday at 8:02", "Sep 13 at 8:00" */
-export function relativeMoment(value: string, now: string, timeZone: string) {
+/** "today", "tomorrow", "yesterday" or "Sep 13" */
+export function relativeDay(value: string, now: string, timeZone: string) {
   const days = dayDiff(value, now, timeZone)
-  const day = days === 0 ? 'today' : days === 1 ? 'yesterday' : days === -1 ? 'tomorrow' : shortDate(value, timeZone)
-  return `${day} at ${clock(value, timeZone)}`
+  return days === 0 ? 'today' : days === 1 ? 'yesterday' : days === -1 ? 'tomorrow' : shortDate(value, timeZone)
+}
+
+export function relativeMoment(value: string, now: string, timeZone: string) {
+  return `${relativeDay(value, now, timeZone)} at ${clock(value, timeZone)}`
 }
 
 /** "found today, 10:59" or "found Sep 13" */
