@@ -1,5 +1,8 @@
 'use client'
 
+import { ArrowNarrowRightIcon } from '@/components/icons/arrow-narrow-right-icon'
+import { ClockIcon } from '@/components/icons/clock-icon'
+import { SourceIcon } from '@/components/icons/source-icon'
 import type { LeadView } from '@/lib/radars'
 import type { EvidenceT } from '@/lib/research/contract'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -53,12 +56,14 @@ export function LeadItem({
   const d = lead.data
   const quote = excerptOf(lead)
   const note = statusNote(lead, timezone)
+  const who = author(lead)
+  const intent = d.intent === 'explicit_request' ? 'request' : d.intent === 'trigger_event' ? 'trigger' : 'problem'
   return (
     // A div with button semantics: the item contains its own Restore button, and buttons can't nest.
     <div
       role="button"
       tabIndex={0}
-      className={`item ${lead.status === 'dismissed' ? 'is-dismissed' : ''}`}
+      className={`item item--${intent} ${lead.status === 'dismissed' ? 'is-dismissed' : ''}`}
       aria-current={current}
       data-lead-id={lead.id}
       onClick={onOpen}
@@ -71,14 +76,29 @@ export function LeadItem({
     >
       <span className="item__top">
         <IntentTag lead={lead} />
-        {note && <span className="tag tag--state">{note}</span>}
-        <span className="item__time">{d.date_status === 'unknown' ? 'Date not shown' : publishedAgo(d.published_date, now)}</span>
+        {note && <span className={`tag tag--state ${lead.status === 'contacted' ? 'tag--contacted' : ''}`}>{note}</span>}
+        <span className="item__time">
+          <ClockIcon width={12} height={12} aria-hidden="true" />
+          {d.date_status === 'unknown' ? 'Date not shown' : publishedAgo(d.published_date, now)}
+        </span>
       </span>
       <h3>{d.headline}</h3>
-      <q>{quote?.excerpt ?? d.need_summary}</q>
+      <span className="item__quote">
+        <q>{quote?.excerpt ?? d.need_summary}</q>
+        <span className="item__who">
+          <span className="item__avatar" aria-hidden="true">
+            {who.replace(/^@/, '').charAt(0).toUpperCase()}
+          </span>
+          <span className="item__author">{who}</span>
+        </span>
+      </span>
       <span className="item__foot">
-        <span>{hostOf(d.source_url)}</span>
-        <span>{author(lead)}</span>
+        <span className="item__source">
+          <span className="item__host">
+            <SourceIcon host={hostOf(d.source_url)} />
+            {hostOf(d.source_url)}
+          </span>
+        </span>
         <span className="act">
           {lead.status === 'dismissed' ? (
             <button
@@ -92,7 +112,10 @@ export function LeadItem({
               Restore
             </button>
           ) : (
-            <span className="btn btn--quiet btn--sm">Open lead</span>
+            <span className="item__open">
+              Open lead
+              <ArrowNarrowRightIcon width={13} height={7} aria-hidden="true" />
+            </span>
           )}
         </span>
       </span>
@@ -307,7 +330,7 @@ export function LeadDrawer({
         </p>
         {note && <p className="state-note">{note}</p>}
 
-        <div className={`evidence ${d.intent === 'explicit_request' ? 'is-request' : ''}`}>
+        <div className={`evidence ${d.intent === 'explicit_request' ? 'is-request' : d.intent === 'trigger_event' ? 'is-trigger' : ''}`}>
           <blockquote>{quote ? `“${quote.excerpt}”` : d.need_summary}</blockquote>
           <p className="evidence__meta">
             <span>{quote ? 'Their own words' : 'Our paraphrase'}</span>
