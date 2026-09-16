@@ -37,9 +37,12 @@ function supported(lead: LeadT, enrichment: EnrichmentT) {
   return identities.some((identity) => haystack.includes(identity))
 }
 
-export async function enrichLead(lead: LeadT, profile: BusinessProfileT, timeoutMs = 60_000): Promise<EnrichmentT | null> {
-  if (!process.env.OPENAI_API_KEY) return null
-  if (!lead.public_handle && !lead.person_name && !lead.company_name) return null
+export type EnrichOutcome = { enrichment: EnrichmentT | null; usage: { input_tokens: number; output_tokens: number; web_search_calls: number } }
+
+export async function enrichLead(lead: LeadT, profile: BusinessProfileT, timeoutMs = 60_000): Promise<EnrichOutcome> {
+  const none: EnrichOutcome = { enrichment: null, usage: { input_tokens: 0, output_tokens: 0, web_search_calls: 0 } }
+  if (!process.env.OPENAI_API_KEY) return none
+  if (!lead.public_handle && !lead.person_name && !lead.company_name) return none
   const response = await openai().responses.create(
     {
       model: SEARCH_MODEL,
@@ -67,14 +70,16 @@ export async function enrichLead(lead: LeadT, profile: BusinessProfileT, timeout
     { timeout: timeoutMs },
   )
   const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
-  if (response.status !== 'completed' || !audit.text.trim()) return null
+  const usage = { input_tokens: response.usage?.input_tokens ?? 0, output_tokens: response.usage?.output_tokens ?? 0, web_search_calls: audit.searchCalls }
+  const done = (enrichment: EnrichmentT | null): EnrichOutcome => ({ enrichment, usage })
+  if (response.status !== 'completed' || !audit.text.trim()) return done(null)
   let parsed: EnrichmentT
   try {
     const result = Enrichment.safeParse(JSON.parse(audit.text))
-    if (!result.success) return null
+    if (!result.success) return done(null)
     parsed = result.data
   } catch {
-    return null
+    return done(null)
   }
   const consulted = new Set(audit.urls.map((url) => safeOutgoingUrl(url)).filter(Boolean))
   const evidence = parsed.evidence
@@ -87,7 +92,7 @@ export async function enrichLead(lead: LeadT, profile: BusinessProfileT, timeout
     profile_url: safeOutgoingUrl(parsed.profile_url),
     evidence,
   }
-  if (!evidence.length || !supported(lead, clean)) return null
-  if (!clean.company_website && !clean.profile_url && !clean.role && !clean.location && !clean.company_summary) return null
-  return clean
+  if (!evidence.length || !supported(lead, clean)) return done(null)
+  if (!clean.company_website && !clean.profile_url && !clean.role && !clean.location && !clean.company_summary) return done(null)
+  return done(clean)
 }

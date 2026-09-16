@@ -41,7 +41,7 @@ After the website step, visitors give the email address where leads should go. R
 
 ## Watching and learning
 
-- **Watch runs** (`kind = 'watch'`): every `WATCH_INTERVAL_HOURS` an active radar polls its `watched_sources` (subreddits where candidates were found, toggleable on the page) and searches its proven topics with small budgets. Leads wait for the morning digest unless one is an explicit request scoring at least `INSTANT_ALERT_MIN_SCORE`. Spend per radar per month is capped by `MONTHLY_RADAR_BUDGET_USD`; watch runs pause at the cap.
+- **One complete run per day.** An active radar runs at 8:00 local: 12 buyer situations across every connector, plus a poll of its `watched_sources` (the communities where earlier runs found candidates, toggleable on the page), then one digest email. `WATCH_INTERVAL_HOURS` (off by default) adds extra polls between morning runs (`kind = 'watch'`, smaller budgets, instant email only for an explicit request scoring at least `INSTANT_ALERT_MIN_SCORE`); they pause at `MONTHLY_RADAR_BUDGET_USD`.
 - **Memory:** `seen_sources` (never re-read within 30 days; an unresolved one may be checked once more), `search_stats` (per-topic hits, candidates, published, contacted: proven topics run first, dead topics are dropped), `leads.dismiss_reason` (asked with one tap when a lead is dismissed) and the contacted/dismissed leads themselves, which reach the triage and qualification prompts as `feedback`.
 - **Focus:** besides the service subset and market, the user can write who they want and who to skip; both steer search and qualification without adding undocumented services.
 

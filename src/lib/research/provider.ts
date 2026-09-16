@@ -42,6 +42,9 @@ export type Usage = {
   output_tokens: number
   reasoning_tokens: number
   web_search_calls: number
+  /** Tokens spent by the small model (searches, triage, reads, enrichment), priced separately. */
+  small_input_tokens?: number
+  small_output_tokens?: number
   /** Non-token costs already priced by the provider (Exa searches), added to the run cost. */
   extra_cost_usd?: number
 }

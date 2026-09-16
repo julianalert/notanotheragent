@@ -107,6 +107,8 @@ async function enqueueDueDailyRuns() {
  * topics for anything new. Never while another run for the radar is queued or running (the morning run comes first).
  */
 async function enqueueDueWatchRuns() {
+  // One complete run per day is the product; extra polls only when WATCH_INTERVAL_HOURS is set.
+  if (!(config.watchIntervalHours > 0)) return
   const due = await query<{ id: string; last_watch_at: Date | null }>(
     `select r.id, r.last_watch_at from radars r
      where r.plan in ('active', 'past_due') and r.research_ends_at > now() and r.profile is not null and r.activated_at is not null
@@ -235,7 +237,8 @@ async function startRun(run: RunRow) {
     excludeKeys: [...new Set([...prior.map((lead) => lead.source_key), ...memory.excludeKeys])],
     priorityTopics: memory.priorityTopics,
     deadTopics: memory.deadTopics,
-    subreddits: run.kind === 'watch' ? memory.watchedSubreddits : [],
+    // The communities where earlier runs found candidates are polled as part of every scheduled run.
+    subreddits: run.kind === 'initial' ? [] : memory.watchedSubreddits,
   }
   // A follow-up receives the previous run's candidates, queries and untried angles, and searches the same window.
   let followUp: { previousCandidates: PreviousCandidate[]; previousQueries: string[]; untriedAngles: string[]; windowStart?: string } = {
@@ -491,13 +494,14 @@ async function saveResults(
   result: ResearchResultT,
   auditUrls: string[],
   actions: ToolAction[],
-  usage: Usage,
+  usageIn: Usage,
   raw: unknown,
   repairUsed: boolean,
 ) {
   const radar = await getRadar(run.radar_id)
   const now = new Date()
   const provider = getProvider()
+  let usage = usageIn
 
   let outcome: RunOutcome | null = null
   let profile: BusinessProfileT | null = run.kind === 'initial' ? null : radar.profile
@@ -554,8 +558,15 @@ async function saveResults(
   if (published.length && profile && getProvider().name !== 'mock') {
     const enriched = await Promise.allSettled(published.map((item) => enrichLead(item.lead, profile, 45_000)))
     enriched.forEach((outcome, index) => {
-      published[index].lead.enrichment = outcome.status === 'fulfilled' ? outcome.value : null
-      if (outcome.status === 'rejected') log('runs.enrich_failed', { run: run.id, error: String((outcome.reason as Error)?.message ?? outcome.reason).slice(0, 120) })
+      published[index].lead.enrichment = outcome.status === 'fulfilled' ? outcome.value.enrichment : null
+      if (outcome.status === 'fulfilled') {
+        usage = {
+          ...usage,
+          web_search_calls: usage.web_search_calls + outcome.value.usage.web_search_calls,
+          small_input_tokens: (usage.small_input_tokens ?? 0) + outcome.value.usage.input_tokens,
+          small_output_tokens: (usage.small_output_tokens ?? 0) + outcome.value.usage.output_tokens,
+        }
+      } else log('runs.enrich_failed', { run: run.id, error: String((outcome.reason as Error)?.message ?? outcome.reason).slice(0, 120) })
     })
   }
   const followUp = followUpDecision({
@@ -633,11 +644,14 @@ async function saveResults(
           ? 'pending'
           : 'skipped'
 
-  // Hosted searches are priced per call; connector costs already priced by the provider (Exa) come as extra_cost_usd.
+  // Main-model and small-model tokens at their own rates; hosted searches per call; Exa costs as reported.
   const cost =
     (usage.input_tokens / 1e6) * config.cost.inputPerMTok +
     (usage.output_tokens / 1e6) * config.cost.outputPerMTok +
-    (usage.extra_cost_usd !== undefined ? usage.extra_cost_usd : usage.web_search_calls * config.cost.perWebSearch)
+    ((usage.small_input_tokens ?? 0) / 1e6) * config.cost.smallInputPerMTok +
+    ((usage.small_output_tokens ?? 0) / 1e6) * config.cost.smallOutputPerMTok +
+    usage.web_search_calls * config.cost.perWebSearch +
+    (usage.extra_cost_usd ?? 0)
 
   // Profile, leads, candidates, follow-up and run outcome persist atomically.
   await transaction(async (tx) => {

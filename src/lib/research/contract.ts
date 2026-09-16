@@ -35,7 +35,7 @@ export const AUTOMATIC_FOLLOW_UPS = false
 /** Cheap model for the fallback searches and result triage. */
 export const SEARCH_MODEL = 'gpt-5-mini'
 /** Buyer situations from the acquisition brief searched per run, one search per connector each. */
-export const SEARCH_TOPICS = { initial: 12, daily: 10, follow_up: 8, watch: 6 } as const
+export const SEARCH_TOPICS = { initial: 12, daily: 12, follow_up: 8, watch: 6 } as const
 /** Search results read in full and handed to the qualification request. */
 export const MAX_SOURCES_TO_READ = { initial: 15, daily: 15, follow_up: 12, watch: 6 } as const
 /** Results requested per connector and topic. */

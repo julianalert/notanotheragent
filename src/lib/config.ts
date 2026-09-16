@@ -13,8 +13,8 @@ export const config = {
   slowRunThresholdMs: num('SLOW_RUN_THRESHOLD_SECONDS', 240) * 1000,
   createRateLimitPerHour: num('CREATE_RATE_LIMIT_PER_HOUR', 5),
   retryRateLimitPerHour: num('RETRY_RATE_LIMIT_PER_HOUR', 5),
-  // Paid agent: watch runs poll watched sources every N hours; spend per radar per calendar month is capped.
-  watchIntervalHours: num('WATCH_INTERVAL_HOURS', 3),
+  // Paid agent: one complete run per day. Watch runs (extra polls every N hours) are off unless WATCH_INTERVAL_HOURS > 0.
+  watchIntervalHours: num('WATCH_INTERVAL_HOURS', 0),
   monthlyRadarBudgetUsd: num('MONTHLY_RADAR_BUDGET_USD', 25),
   // A watch-run lead with an explicit request and at least this score (of 10) is emailed at once.
   instantAlertMinScore: num('INSTANT_ALERT_MIN_SCORE', 8),
@@ -27,6 +27,9 @@ export const config = {
   cost: {
     inputPerMTok: num('COST_INPUT_PER_MTOK', 1.25),
     outputPerMTok: num('COST_OUTPUT_PER_MTOK', 10),
+    // The small model does the searches, triage, page reads and enrichment: most tokens, a fraction of the price.
+    smallInputPerMTok: num('COST_SMALL_INPUT_PER_MTOK', 0.25),
+    smallOutputPerMTok: num('COST_SMALL_OUTPUT_PER_MTOK', 2),
     perWebSearch: num('COST_PER_WEB_SEARCH', 0.01),
   },
 }

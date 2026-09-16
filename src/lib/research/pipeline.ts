@@ -155,8 +155,16 @@ const addUsage = (state: PipelineState, usage: Partial<Usage>) => {
   state.usage.output_tokens += usage.output_tokens ?? 0
   state.usage.reasoning_tokens += usage.reasoning_tokens ?? 0
   state.usage.web_search_calls += usage.web_search_calls ?? 0
+  state.usage.small_input_tokens = (state.usage.small_input_tokens ?? 0) + (usage.small_input_tokens ?? 0)
+  state.usage.small_output_tokens = (state.usage.small_output_tokens ?? 0) + (usage.small_output_tokens ?? 0)
   state.usage.extra_cost_usd = (state.usage.extra_cost_usd ?? 0) + (usage.extra_cost_usd ?? 0)
 }
+
+/** Usage of a small-model call, kept in its own buckets. */
+const smallUsage = (usage: { input_tokens?: number; output_tokens?: number }) => ({
+  small_input_tokens: usage.input_tokens ?? 0,
+  small_output_tokens: usage.output_tokens ?? 0,
+})
 
 /** Errors inside a step: model transport problems and 429/5xx retry the step; everything else fails the run. */
 function classifyStepError(error: unknown): ResearchError {
@@ -196,7 +204,7 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
         triage: [],
         sources: [],
         accessFailures: [],
-        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 0, extra_cost_usd: 0 },
+        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 0, small_input_tokens: 0, small_output_tokens: 0, extra_cost_usd: 0 },
         qualifyResponseId: null,
         resultText: null,
         auditUrls: [],
@@ -347,7 +355,12 @@ async function stepSearch(state: PipelineState) {
   state.hits = result.hits
   state.searches = result.searches
   state.unavailable = result.unavailable
-  addUsage(state, { ...result.usage, web_search_calls: result.searches.length, extra_cost_usd: result.costUsd })
+  // Only hosted OpenAI searches are priced per call; Exa reports its own cost and Hacker News is free.
+  addUsage(state, {
+    ...smallUsage(result.usage),
+    web_search_calls: result.searches.filter((search) => search.connector === 'openai').length,
+    extra_cost_usd: result.costUsd,
+  })
   state.actions.push(
     ...result.searches.map((search) => ({ type: 'search', query: `${search.connector}: ${search.query}`, url: null, status: search.error ? 'failed' : 'completed' })),
   )
@@ -404,7 +417,7 @@ async function stepTriage(state: PipelineState) {
         },
         { timeout: 90_000 },
       )
-      addUsage(state, usageOf(response))
+      addUsage(state, smallUsage(usageOf(response)))
       const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
       if (response.status !== 'completed' || !audit.text.trim()) throw new ResearchError('incomplete', `Triage request ${response.status}`)
       const parsed = TriageResult.safeParse(JSON.parse(audit.text))
@@ -485,7 +498,7 @@ async function stepRead(state: PipelineState) {
         while (cursor < forBrowser.length) {
           const source = forBrowser[cursor++]
           const read = await readWithOpenAI(source.url, SOURCE_PAGE_CHARS)
-          addUsage(state, { input_tokens: read.usage.input_tokens, output_tokens: read.usage.output_tokens, web_search_calls: 1 })
+          addUsage(state, { ...smallUsage(read.usage), web_search_calls: 1 })
           if (!read.text) continue
           source.text = read.text
           source.fetched = true
