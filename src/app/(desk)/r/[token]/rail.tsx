@@ -53,7 +53,7 @@ export function Rail({
     <aside className="rail" aria-label="Radar">
       <Link href="/" className="brand">
         <i aria-hidden="true" />
-        Lead Radar
+        Not Another Agent
       </Link>
 
       <nav className="rail-nav" aria-label="Lead views">

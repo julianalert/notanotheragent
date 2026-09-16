@@ -28,7 +28,7 @@ export default async function RadarPage({ params }: { params: Promise<{ token: s
       <div className="desk">
         <main className="work">
           <Link href="/" className="site">
-            Lead Radar
+            Not Another Agent
           </Link>
           <h1>We couldn’t load your results just now</h1>
           <div className="blank">

@@ -11,7 +11,7 @@ export function Logo() {
         <path d="M12 12 18.5 5.5" strokeLinecap="round" />
         <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
       </svg>
-      <span className="font-display text-2xl/8 tracking-tight">Lead Radar</span>
+      <span className="font-display text-2xl/8 tracking-tight">Not Another Agent</span>
     </span>
   )
 }
@@ -21,7 +21,7 @@ export function SiteNavbar({ links, actions }: { links?: ReactNode; actions?: Re
     <NavbarWithLogoActionsAndLeftAlignedLinks
       id="navbar"
       logo={
-        <NavbarLogo href="/" aria-label="Lead Radar home">
+        <NavbarLogo href="/" aria-label="Not Another Agent home">
           <Logo />
         </NavbarLogo>
       }
@@ -37,7 +37,7 @@ export function SiteFooter() {
       id="footer"
       links={
         <>
-          <FooterCategory title="Lead Radar">
+          <FooterCategory title="Not Another Agent">
             <FooterLink href="/#how-it-works">How it works</FooterLink>
             <FooterLink href="/#every-lead">What every lead includes</FooterLink>
             <FooterLink href="/#faq">Questions</FooterLink>
@@ -53,7 +53,7 @@ export function SiteFooter() {
           </FooterCategory>
         </>
       }
-      fineprint="Lead Radar researches public sources. Every lead links to its original source so you can check it."
+      fineprint="Not Another Agent researches public sources. Every lead links to its original source so you can check it."
     />
   )
 }

@@ -13,7 +13,7 @@ const instrumentSerif = Instrument_Serif({
 })
 
 export const metadata: Metadata = {
-  title: 'Lead Radar — find companies that need what your agency sells',
+  title: 'Not Another Agent — find companies that need what your agency sells',
   description:
     'We scan the web for companies publicly signaling they need your services and send the best matches to your inbox every morning.',
   referrer: 'no-referrer',

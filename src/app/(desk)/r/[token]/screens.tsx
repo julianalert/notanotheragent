@@ -238,7 +238,7 @@ export function DeadEnd({ view, kind }: { view: RadarView; kind: 'unreadable' | 
         {kind === 'unreadable'
           ? `We tried ${view.websiteHost} but couldn’t confirm a concrete service from its pages. Point us at the page that describes what you sell.`
           : view.initialRun?.limitations[0] ||
-            'Lead Radar works for agencies, consultants and other B2B service businesses whose buyers post public requests.'}
+            'Not Another Agent works for agencies, consultants and other B2B service businesses whose buyers post public requests.'}
       </p>
       <DeskWebsiteForm placeholder={`${view.websiteHost}/services`} cta="Research this page" />
     </div>
