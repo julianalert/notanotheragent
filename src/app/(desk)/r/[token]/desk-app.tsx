@@ -1,23 +1,15 @@
 'use client'
 
 import type { LeadView, RadarView } from '@/lib/radars'
+import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
+import { LinkIcon } from '@/components/icons/link-icon'
 import { UserCircleIcon } from '@/components/icons/user-circle-icon'
 import Link from 'next/link'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
-import { copyText, countWord, groupLabel, localDateKey, relativeMoment, useToast } from './lib'
+import { copyText, countWord, groupLabel, localDateKey, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
 import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, STEPS, stageFor } from './screens'
-
-function LinkIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} width={14} height={14} aria-hidden="true">
-      <path d="M9 15l6-6" strokeLinecap="round" />
-      <path d="M8 16.5l-1.5 1.5a3.5 3.5 0 0 1-5-5L4 10.5a3.5 3.5 0 0 1 5-5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M16 7.5l1.5-1.5a3.5 3.5 0 0 1 5 5L20 13.5a3.5 3.5 0 0 1-5 5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
 
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 60000
@@ -55,6 +47,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   const [editingFocus, setEditingFocus] = useState(false)
   const [activating, setActivating] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
   const lastStage = useRef('')
   const sawProgress = useRef(isInProgress(initialView.initialRun?.status))
@@ -384,7 +377,10 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   }
 
   async function copyPrivateLink() {
-    if (await copyText(privateUrl)) showToast('Private link copied')
+    if (!(await copyText(privateUrl))) return
+    showToast('Link copied. Save it somewhere safe to come back anytime.')
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 2000)
   }
 
   async function retry() {
@@ -414,32 +410,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   else title = `${countWord(counts.today)} strong match${counts.today === 1 ? '' : 'es'} ${foundToday ? 'today' : 'to review'}`
 
   const showFocus = view.focus && (screen === 'leads' || screen === 'empty')
-  const lastRunWithCandidates = [view.followUpRun, view.latestDailyRun, view.initialRun]
-    .filter((item) => item?.status === 'completed' && item.candidates)
-    .sort((a, b) => Date.parse(b!.createdAt) - Date.parse(a!.createdAt))[0]
-  // A follow-up continues the search before it, so report both together.
-  const searchRuns = lastRunWithCandidates
-    ? lastRunWithCandidates.kind === 'follow_up'
-      ? [
-          lastRunWithCandidates,
-          ...[view.latestDailyRun, view.initialRun]
-            .filter((item) => item?.status === 'completed' && Date.parse(item.createdAt) < Date.parse(lastRunWithCandidates.createdAt))
-            .sort((a, b) => Date.parse(b!.createdAt) - Date.parse(a!.createdAt))
-            .slice(0, 1),
-        ]
-      : [lastRunWithCandidates]
-    : []
-  const searchRunIds = new Set(searchRuns.map((item) => item!.id))
-  const publishedInThatRun = view.leads.filter((lead) => searchRunIds.has(lead.runId)).length
-  const candidatesInThatRun = searchRuns.reduce((sum, item) => sum + (item!.candidates ?? 0), 0)
-  const daily = view.latestDailyRun
-  const dailyNote = isInProgress(view.followUpRun?.status)
-    ? 'Checking more angles for new leads'
-    : daily?.retrying
-      ? 'Today’s search is delayed. We’re retrying.'
-      : isInProgress(daily?.status)
-        ? 'Today’s search is in progress'
-        : null
 
   const groups = useMemo(() => {
     if (deskView !== 'today') return [{ key: deskView, label: deskView === 'contacted' ? 'Contacted' : 'Dismissed', leads: rows }]
@@ -516,10 +486,23 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           <header className="topbar">
             <div className="work-top__left">
               <span className="work-top__site">{view.websiteHost}</span>
-              <button type="button" className="copy-link-btn" onClick={copyPrivateLink}>
-                <LinkIcon />
-                Copy private link
-              </button>
+              <div className="copy-link">
+                <button
+                  type="button"
+                  className="copy-link-btn"
+                  data-copied={linkCopied || undefined}
+                  aria-describedby="copy-link-tip"
+                  onClick={copyPrivateLink}
+                >
+                  {linkCopied ? <CheckmarkIcon width={12} height={12} strokeWidth={1.6} /> : <LinkIcon width={15} height={15} />}
+                  {linkCopied ? 'Copied' : 'Copy private link'}
+                </button>
+                <div id="copy-link-tip" role="tooltip" className="copy-link-tip">
+                  <b>This link is your way back</b>
+                  <p>There’s no account or password. Bookmark this link or save it somewhere safe to open your leads again, from any device.</p>
+                  <p className="copy-link-tip__note">It’s also in every email we send you. Anyone who has it can see your leads, so keep it private.</p>
+                </div>
+              </div>
             </div>
             <div className="work-top__user" ref={userMenuRef}>
               {view.emailMasked && <span className="work-top__email">{view.emailMasked}</span>}
@@ -558,23 +541,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           <main className="work">
             <h1>{title}</h1>
 
-            {showFocus && view.focus && (
-            <div className="focus">
-              {view.focus.services.split(' · ').map((service) => (
-                <span key={service} className="chip">
-                  {service}
-                </span>
-              ))}
-              <span className="chip">{view.focus.customerType}</span>
-              <span className="chip">{view.focus.market}</span>
-              {!view.expired && (
-                <button type="button" className="chip chip--edit" onClick={() => setEditingFocus(true)} aria-expanded={editingFocus}>
-                  Adjust focus
-                </button>
-              )}
-            </div>
-          )}
-
           {screen === 'email' && <EmailStep view={view} token={token} onSaved={refresh} />}
 
           {screen === 'unreadable' && <DeadEnd view={view} kind="unreadable" />}
@@ -583,42 +549,9 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
           {screen === 'leads' && (
             <>
+              {deskView !== 'today' && (
               <div className="summary">
-                {deskView === 'today' ? (
-                  <>
-                    {view.lastResearchAt && (
-                      <span>
-                        Research finished <b>{relativeMoment(view.lastResearchAt, view.now, view.timezone)}</b>
-                      </span>
-                    )}
-                    {lastRunWithCandidates && (
-                      <>
-                        <span className="sep" aria-hidden="true" />
-                        <span>
-                          <b>{publishedInThatRun}</b> of {candidatesInThatRun} findings cleared the evidence check
-                        </span>
-                      </>
-                    )}
-                    <span className="sep" aria-hidden="true" />
-                    {!view.agentLive ? (
-                      <span>
-                        Agent asleep —{' '}
-                        <button type="button" className="link" onClick={() => billing('/checkout')} disabled={activating}>
-                          activate it
-                        </button>{' '}
-                        to keep searching
-                      </span>
-                    ) : dailyNote ? (
-                      <span>{dailyNote}</span>
-                    ) : isInProgress(view.latestWatchRun?.status) ? (
-                      <span>Checking your watched sources now</span>
-                    ) : view.nextRunAt ? (
-                      <span>
-                        Next search <b>{relativeMoment(view.nextRunAt, view.now, view.timezone)}</b>
-                      </span>
-                    ) : null}
-                  </>
-                ) : deskView === 'contacted' ? (
+                {deskView === 'contacted' ? (
                   <>
                     <span>
                       We never contact anyone for you — <b>you marked these yourself</b>
@@ -634,6 +567,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                   </>
                 )}
               </div>
+              )}
               {view.sampleData && (
                 <p className="note">Development mode: these leads come from the sample research provider, not real research.</p>
               )}
@@ -696,9 +630,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       {editingFocus && showFocus && (
         <div className="focus-modal-scrim" onClick={() => setEditingFocus(false)}>
           <div className="focus-modal" onClick={(event) => event.stopPropagation()}>
-            <button type="button" className="close focus-modal__close" aria-label="Close" onClick={() => setEditingFocus(false)}>
-              ✕
-            </button>
             <FocusEditor view={view} onSave={saveFocus} onClose={() => setEditingFocus(false)} />
           </div>
         </div>

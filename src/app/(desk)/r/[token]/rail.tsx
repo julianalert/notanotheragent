@@ -1,5 +1,6 @@
 'use client'
 
+import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import type { RadarView } from '@/lib/radars'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -81,18 +82,31 @@ export function Rail({
     </>
   ) : (
     <>
-      <span className="live is-ended">
+      <span className="pitch__badge">
         <span aria-hidden="true">😴</span>
         {view.plan === 'cancelled' || view.plan === 'past_due' ? 'Agent stopped' : 'Agent asleep'}
       </span>
-      <p className="days">
-        ${view.priceUsd} <small className="days__unit">per month</small>
+      <p className="pitch__title">Wake it up for fresh leads every morning</p>
+      <ul className="pitch__list">
+        {['New leads every morning', 'Watches where buyers post', 'Learns from your choices'].map((item) => (
+          <li key={item}>
+            <CheckmarkIcon width={10} height={10} strokeWidth={1.8} />
+            {item}
+          </li>
+        ))}
+      </ul>
+      <p className="pitch__price">
+        ${view.priceUsd}
+        <small>/ month</small>
       </p>
-      <p className="rail-desc">Searches every morning, watches your buyers’ communities through the day, learns from what you contact.</p>
       {canActivate ? (
-        <button type="button" className="btn btn--brand btn--sm" style={{ marginTop: 16 }} onClick={onActivate} disabled={activating}>
-          {activating ? 'Opening checkout…' : view.plan === 'free' ? 'Activate my agent' : 'Reactivate my agent'}
-        </button>
+        <>
+          <button type="button" className="btn btn--brand pitch__cta" onClick={onActivate} disabled={activating}>
+            {activating ? 'Opening checkout…' : view.plan === 'free' ? 'Activate my agent' : 'Reactivate my agent'}
+            {!activating && <span aria-hidden="true">→</span>}
+          </button>
+          <p className="pitch__fine">Cancel any time</p>
+        </>
       ) : (
         <p className="rail-muted">{firstSearchDone ? 'Activation is not available yet.' : 'Available once your first search is done.'}</p>
       )}
@@ -110,8 +124,9 @@ export function Rail({
         <Link href="/" className="brand">
           <span>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.png" alt="Not Another Agent" />
+            <img src="/logo.png" alt="" />
           </span>
+          <span className="brand__name">Not Another Agent</span>
         </Link>
 
         {viewsEnabled && (
@@ -169,6 +184,7 @@ export function Rail({
                 }}
               >
                 Copy private link
+                <small className="menu-hint">Your way back to these leads, no password needed</small>
               </button>
               <Link href="/#start" role="menuitem" onClick={() => setMenuOpen(false)}>
                 New search
@@ -176,43 +192,6 @@ export function Rail({
             </div>
           )}
         </div>
-
-        {viewsEnabled && (
-          <div className="rail-facts">
-            <div>
-              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
-              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
-              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
-                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
-              </button>
-              {editingHook && (
-                <form
-                  className="rail-form"
-                  onSubmit={async (event) => {
-                    event.preventDefault()
-                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
-                    const problem = await onWebhook(url)
-                    setHookError(problem)
-                    if (!problem) setEditingHook(false)
-                  }}
-                >
-                  <label htmlFor="desk-webhook" className="sr-only">
-                    Webhook URL
-                  </label>
-                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
-                  <button type="submit" className="btn btn--line btn--sm">
-                    Save
-                  </button>
-                  {hookError && (
-                    <p role="alert" className="form-error">
-                      {hookError}
-                    </p>
-                  )}
-                </form>
-              )}
-            </div>
-          </div>
-        )}
 
         {view.agentLive && (view.nextRunAt || view.watchedSources.length > 0) && (
           <div className="rail-facts">
@@ -266,7 +245,44 @@ export function Rail({
           </div>
         )}
 
-        <div className="rail-card" id="activate">
+        {viewsEnabled && (
+          <div className="rail-facts rail-facts--hook">
+            <div>
+              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
+              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
+              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
+                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
+              </button>
+              {editingHook && (
+                <form
+                  className="rail-form"
+                  onSubmit={async (event) => {
+                    event.preventDefault()
+                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
+                    const problem = await onWebhook(url)
+                    setHookError(problem)
+                    if (!problem) setEditingHook(false)
+                  }}
+                >
+                  <label htmlFor="desk-webhook" className="sr-only">
+                    Webhook URL
+                  </label>
+                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
+                  <button type="submit" className="btn btn--line btn--sm">
+                    Save
+                  </button>
+                  {hookError && (
+                    <p role="alert" className="form-error">
+                      {hookError}
+                    </p>
+                  )}
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className={view.agentLive ? 'rail-card' : 'rail-card rail-card--pitch'} id="activate">
           {agentCard}
         </div>
       </aside>
