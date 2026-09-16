@@ -280,21 +280,21 @@
 .desk .item__time { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
 .desk .item h3 { font-size: 18px; line-height: 1.35; font-weight: 600; letter-spacing: -0.015em; color: var(--ink); }
 .desk .item:hover h3 { color: #000; }
-.desk .item__quote { display: grid; gap: 8px; padding: 12px 14px; border-radius: 8px; background: #f6f7f8; border-left: 2px solid var(--line); }
+.desk .item__quote { display: block; padding: 10px 14px; border-radius: 8px; background: #f6f7f8; border-left: 2px solid var(--line); }
 .desk .item q {
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
   color: var(--ink-2); font-size: 14.5px; line-height: 1.55; quotes: '“' '”';
 }
 .desk .item__foot { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--ink-3); padding-top: 2px; flex-wrap: wrap; }
-.desk .item__who { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
-.desk .item__source { display: flex; align-items: center; min-width: 0; }
+.desk .item__byline { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.desk .item__byline-text { color: var(--ink-3); }
+.desk .item__byline-text b { color: var(--ink); font-weight: 500; }
 .desk .item__avatar {
-  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 20px; height: 20px; margin-right: 2px; border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 16%, #fff); color: color-mix(in srgb, var(--accent) 70%, #000);
   font-size: 11px; font-weight: 600;
 }
-.desk .item__author { color: var(--ink-2); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.desk .item__host { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--ink-2); }
+.desk .item__host { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--ink); font-weight: 500; }
 .desk .item__host svg { flex-shrink: 0; color: var(--ink); }
 .desk .item__foot .act { margin-left: auto; display: flex; gap: 6px; }
 .desk .item__open {

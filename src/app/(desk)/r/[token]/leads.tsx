@@ -56,7 +56,8 @@ export function LeadItem({
   const d = lead.data
   const quote = excerptOf(lead)
   const note = statusNote(lead, timezone)
-  const who = author(lead)
+  const named = d.person_name ?? d.public_handle ?? d.company_name
+  const host = hostOf(d.source_url)
   const intent = d.intent === 'explicit_request' ? 'request' : d.intent === 'trigger_event' ? 'trigger' : 'problem'
   return (
     // A div with button semantics: the item contains its own Restore button, and buttons can't nest.
@@ -85,18 +86,24 @@ export function LeadItem({
       <h3>{d.headline}</h3>
       <span className="item__quote">
         <q>{quote?.excerpt ?? d.need_summary}</q>
-        <span className="item__who">
-          <span className="item__avatar" aria-hidden="true">
-            {who.replace(/^@/, '').charAt(0).toUpperCase()}
-          </span>
-          <span className="item__author">{who}</span>
-        </span>
       </span>
       <span className="item__foot">
-        <span className="item__source">
+        <span className="item__byline">
+          <span className="item__avatar" aria-hidden="true">
+            {named ? named.replace(/^@/, '').charAt(0).toUpperCase() : '?'}
+          </span>
+          <span className="item__byline-text">
+            {named ? (
+              <>
+                From <b>{named}</b> on
+              </>
+            ) : (
+              'Posted on'
+            )}
+          </span>
           <span className="item__host">
-            <SourceIcon host={hostOf(d.source_url)} />
-            {hostOf(d.source_url)}
+            <SourceIcon host={host} />
+            {host}
           </span>
         </span>
         <span className="act">
