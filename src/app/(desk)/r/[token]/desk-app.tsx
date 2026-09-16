@@ -1,11 +1,23 @@
 'use client'
 
 import type { LeadView, RadarView } from '@/lib/radars'
+import { UserCircleIcon } from '@/components/icons/user-circle-icon'
+import Link from 'next/link'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
 import { copyText, countWord, groupLabel, localDateKey, relativeMoment, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
 import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, STEPS, stageFor } from './screens'
+
+function LinkIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} width={14} height={14} aria-hidden="true">
+      <path d="M9 15l6-6" strokeLinecap="round" />
+      <path d="M8 16.5l-1.5 1.5a3.5 3.5 0 0 1-5-5L4 10.5a3.5 3.5 0 0 1 5-5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M16 7.5l1.5-1.5a3.5 3.5 0 0 1 5 5L20 13.5a3.5 3.5 0 0 1-5 5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 60000
@@ -42,9 +54,31 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   const [openId, setOpenId] = useState<string | null>(null)
   const [editingFocus, setEditingFocus] = useState(false)
   const [activating, setActivating] = useState(false)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
   const lastStage = useRef('')
   const sawProgress = useRef(isInProgress(initialView.initialRun?.status))
   const { toast, show: showToast, hide: hideToast } = useToast()
+
+  // Close the account dropdown when clicking anywhere outside it.
+  useEffect(() => {
+    if (!userMenuOpen) return
+    const onDocClick = (event: MouseEvent) => {
+      if (!userMenuRef.current?.contains(event.target as Node)) setUserMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [userMenuOpen])
+
+  // Close the "Adjust my research" popup on Escape.
+  useEffect(() => {
+    if (!editingFocus) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setEditingFocus(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [editingFocus])
 
   /* ------------------------------ Data ------------------------------ */
 
@@ -295,39 +329,15 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     [rows, safeCursor, openId],
   )
 
-  // j / k move, Enter or o opens, c marks contacted, x dismisses, Esc closes.
+  // Esc closes the open lead.
   useEffect(() => {
-    if (screen !== 'leads') return
+    if (screen !== 'leads' || !openId) return
     function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (/^(input|textarea|select)$/i.test((event.target as HTMLElement).tagName)) return
-      if (event.key === 'Escape' && openId) return setOpenId(null)
-      if (event.key === 'j' || event.key === 'ArrowDown') {
-        event.preventDefault()
-        return step(1)
-      }
-      if (event.key === 'k' || event.key === 'ArrowUp') {
-        event.preventDefault()
-        return step(-1)
-      }
-      if (!rows.length) return
-      if ((event.key === 'Enter' || event.key === 'o') && !(event.target as HTMLElement).closest('button, a, [role="button"]')) {
-        event.preventDefault()
-        return setOpenId(openId ? null : rows[safeCursor].id)
-      }
-      const target = openLead ?? rows[safeCursor]
-      if (event.key === 'c' && target.status === 'new') {
-        event.preventDefault()
-        setStatus(target, 'contacted', 'Marked contacted')
-      }
-      if (event.key === 'x' && target.status === 'new') {
-        event.preventDefault()
-        setStatus(target, 'dismissed', 'Lead dismissed')
-      }
+      if (event.key === 'Escape') setOpenId(null)
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [screen, openId, openLead, rows, safeCursor, step, setStatus])
+  }, [screen, openId])
 
   async function saveFocus(focus: { services: string[]; market: string; wanted: string; avoid: string } | null) {
     const response = await api('/focus', { method: 'PATCH', body: JSON.stringify(focus ?? { reset: true }) }).catch(() => null)
@@ -371,6 +381,10 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       showToast('We couldn’t save that change.')
       refresh()
     }
+  }
+
+  async function copyPrivateLink() {
+    if (await copyText(privateUrl)) showToast('Private link copied')
   }
 
   async function retry() {
@@ -481,7 +495,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       <div className="app">
         <Rail
           view={view}
-          privateUrl={privateUrl}
           currentView={deskView}
           counts={counts}
           viewsEnabled={screen === 'leads'}
@@ -490,22 +503,62 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           onPortal={() => billing('/billing-portal')}
           onToggleSource={toggleSource}
           onWebhook={saveWebhook}
+          onCopyLink={copyPrivateLink}
           onView={(next) => {
             setDeskView(next)
             setCursor(0)
             setOpenId(null)
           }}
-          onCopyLink={async () => {
-            if (await copyText(privateUrl)) showToast('Private link copied')
-          }}
           onTimezoneChange={setTimezone}
         />
 
-        <main className="work">
-          <p className="site">Private radar — {view.websiteHost}</p>
-          <h1>{title}</h1>
+        <div className="workspace">
+          <header className="topbar">
+            <div className="work-top__left">
+              <span className="work-top__site">{view.websiteHost}</span>
+              <button type="button" className="copy-link-btn" onClick={copyPrivateLink}>
+                <LinkIcon />
+                Copy private link
+              </button>
+            </div>
+            <div className="work-top__user" ref={userMenuRef}>
+              {view.emailMasked && <span className="work-top__email">{view.emailMasked}</span>}
+              <button
+                type="button"
+                className="user-btn"
+                aria-haspopup="menu"
+                aria-expanded={userMenuOpen}
+                aria-label="Account menu"
+                onClick={() => setUserMenuOpen((value) => !value)}
+              >
+                <UserCircleIcon width={18} height={18} />
+              </button>
+              {userMenuOpen && (
+                <div className="user-menu" role="menu">
+                  {showFocus && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setUserMenuOpen(false)
+                        setEditingFocus(true)
+                      }}
+                    >
+                      Adjust my research
+                    </button>
+                  )}
+                  <Link href="/#start" role="menuitem" onClick={() => setUserMenuOpen(false)}>
+                    New search
+                  </Link>
+                </div>
+              )}
+            </div>
+          </header>
 
-          {showFocus && view.focus && (
+          <main className="work">
+            <h1>{title}</h1>
+
+            {showFocus && view.focus && (
             <div className="focus">
               {view.focus.services.split(' · ').map((service) => (
                 <span key={service} className="chip">
@@ -515,13 +568,12 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
               <span className="chip">{view.focus.customerType}</span>
               <span className="chip">{view.focus.market}</span>
               {!view.expired && (
-                <button type="button" className="chip chip--edit" onClick={() => setEditingFocus((value) => !value)} aria-expanded={editingFocus}>
+                <button type="button" className="chip chip--edit" onClick={() => setEditingFocus(true)} aria-expanded={editingFocus}>
                   Adjust focus
                 </button>
               )}
             </div>
           )}
-          {showFocus && editingFocus && <FocusEditor view={view} onSave={saveFocus} onClose={() => setEditingFocus(false)} />}
 
           {screen === 'email' && <EmailStep view={view} token={token} onSaved={refresh} />}
 
@@ -636,31 +688,19 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
               )}
             </>
           )}
-        </main>
+          </main>
+        </div>
       </div>
 
-      {screen === 'leads' && rows.length > 0 && (
-        <div className="hints" aria-hidden="true">
-          <span>
-            <kbd>j</kbd>
-            <kbd>k</kbd> move
-          </span>
-          <span>
-            <kbd>↵</kbd> open
-          </span>
-          {deskView === 'today' && (
-            <>
-              <span>
-                <kbd>c</kbd> contacted
-              </span>
-              <span>
-                <kbd>x</kbd> dismiss
-              </span>
-            </>
-          )}
-          <span>
-            <kbd>esc</kbd> close
-          </span>
+
+      {editingFocus && showFocus && (
+        <div className="focus-modal-scrim" onClick={() => setEditingFocus(false)}>
+          <div className="focus-modal" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="close focus-modal__close" aria-label="Close" onClick={() => setEditingFocus(false)}>
+              ✕
+            </button>
+            <FocusEditor view={view} onSave={saveFocus} onClose={() => setEditingFocus(false)} />
+          </div>
         </div>
       )}
 

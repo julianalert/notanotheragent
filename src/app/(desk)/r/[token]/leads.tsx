@@ -556,10 +556,10 @@ export function LeadDrawer({
               Open source
             </button>
             <button type="button" className="btn btn--quiet" onClick={() => onAction('contact')}>
-              Mark contacted <kbd>c</kbd>
+              Mark contacted
             </button>
             <button type="button" className="btn btn--quiet spacer" onClick={() => onAction('dismiss')}>
-              Dismiss <kbd>x</kbd>
+              Dismiss
             </button>
           </>
         )}

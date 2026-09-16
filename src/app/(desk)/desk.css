@@ -59,43 +59,57 @@
 .desk .rail-nav > button, .desk .rail-nav > a {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
   padding: 9px 10px; border-radius: 8px; color: var(--rail-dim); font-size: 14px; text-align: left; text-decoration: none;
+  cursor: pointer;
 }
 .desk .rail-nav > button:hover, .desk .rail-nav > a:hover { background: var(--rail-2); color: var(--rail-ink); }
 .desk .rail-nav > [aria-current='true'] { background: var(--rail-2); color: var(--rail-ink); font-weight: 500; }
 .desk .rail-nav em { font-style: normal; font-size: 13px; color: var(--rail-dim); }
-.desk .rail-nav .sep { height: 1px; background: var(--rail-3); margin: 8px 2px; }
 
-.desk .rail-card { background: var(--rail-2); border-radius: var(--r); padding: 15px; }
+.desk .rail-card { margin-top: auto; background: var(--rail-2); border-radius: var(--r); padding: 15px; }
 .desk .live { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8fd9b6; }
 .desk .live i { width: 6px; height: 6px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 3px rgba(46, 158, 107, 0.22); }
 .desk .live.is-ended { color: var(--rail-dim); }
 .desk .live.is-ended i { background: var(--rail-dim); box-shadow: none; }
 .desk .days { font-size: 32px; line-height: 1.05; letter-spacing: -0.03em; font-weight: 600; margin-top: 12px; }
 .desk .days small { display: block; font-size: 13px; font-weight: 400; color: var(--rail-dim); letter-spacing: 0; margin-top: 5px; line-height: 1.4; }
+.desk .days__unit { font-size: 13px; font-weight: 400; color: var(--rail-dim); margin-left: 4px; }
+.desk .rail-desc { font-size: 13px; color: var(--rail-dim); line-height: 1.4; margin-top: 6px; }
 .desk .track { height: 3px; border-radius: 2px; background: var(--rail-3); margin-top: 14px; overflow: hidden; }
 .desk .track i { display: block; height: 100%; background: var(--live); }
 
 .desk .rail-facts { display: grid; gap: 16px; font-size: 13px; color: var(--rail-dim); }
 .desk .rail-facts b { display: block; color: var(--rail-ink); font-weight: 500; font-size: 14px; margin-bottom: 1px; }
-.desk .rail-facts button.link { color: var(--rail-dim); text-decoration: underline; text-underline-offset: 2px; }
+.desk .rail-facts button.link { color: var(--rail-dim); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .desk .rail-facts button.link:hover { color: var(--rail-ink); }
 .desk .rail-facts select {
   margin-top: 8px; width: 100%; font: inherit; font-size: 13px; padding: 7px 8px; border-radius: 8px;
   background: #101216; border: 1px solid var(--rail-3); color: var(--rail-ink);
 }
 
-.desk .rail-link { margin-top: auto; display: grid; gap: 9px; }
-.desk .rail-link p { font-size: 13px; color: var(--rail-dim); line-height: 1.5; }
-.desk .rail-link .row { display: flex; gap: 6px; }
-.desk .rail-link input {
-  flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px;
-  background: #101216; border: 1px solid var(--rail-3); color: var(--rail-dim);
+/* mobile/tablet-only burger menu (nav + account actions), and the sticky agent bar
+   that replaces the rail's agent card at that breakpoint. Both hidden on desktop. */
+.desk .rail-burger { position: relative; margin-left: auto; display: none; }
+.desk .burger-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  width: 34px; height: 34px; border-radius: 8px; background: transparent; cursor: pointer;
 }
+.desk .burger-btn span { display: block; width: 16px; height: 1.5px; background: var(--rail-ink); border-radius: 1px; }
+.desk .burger-btn:hover, .desk .burger-btn[aria-expanded='true'] { background: var(--rail-2); }
+.desk .rail-burger .rail-nav { min-width: 170px; }
+.desk .rail-burger .sep { height: 1px; background: var(--line-2); margin: 4px 2px; }
+.desk .mobile-agent-bar {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; color: var(--rail-ink);
+  background: var(--rail-2); border-top: 1px solid var(--rail-3); padding: 14px 16px;
+  align-items: center; justify-content: space-between; gap: 14px;
+}
+.desk .mobile-agent-bar__text { font-size: 13.5px; line-height: 1.4; color: var(--rail-dim); max-width: 56%; }
+.desk .mobile-agent-bar .btn { flex-shrink: 0; white-space: nowrap; }
 
 /* ================= BUTTONS ================= */
 .desk .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap;
   border-radius: 8px; padding: 9px 14px; font-size: 14px; font-weight: 500; border: 1px solid transparent; text-decoration: none;
+  cursor: pointer;
 }
 .desk .btn:disabled { opacity: 0.6; cursor: default; }
 .desk .btn--brand { background: var(--brand); color: #fff; }
@@ -105,16 +119,40 @@
 .desk .btn--quiet { color: var(--ink-2); }
 .desk .btn--quiet:hover:not(:disabled) { color: var(--ink); background: #eff0f2; }
 .desk .btn--sm { padding: 6px 11px; font-size: 13px; }
-.desk kbd {
-  font: inherit; font-size: 11.5px; color: var(--ink-3); border: 1px solid var(--line); border-bottom-width: 2px;
-  border-radius: 4px; padding: 0 4px; background: #fff; margin-left: 2px;
-}
-.desk .btn--quiet kbd { background: transparent; }
 
 /* ================= WORKSPACE ================= */
+.desk .workspace { display: flex; flex-direction: column; min-width: 0; }
+.desk .topbar {
+  position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 14px 34px;
+}
 .desk .work { padding: 30px 34px 90px; max-width: 1000px; min-width: 0; }
-.desk .site { font-size: 14px; color: var(--ink-3); }
-.desk .work h1 { font-size: 30px; line-height: 1.18; letter-spacing: -0.028em; font-weight: 600; margin: 6px 0 0; max-width: 22ch; }
+.desk .work-top__left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.desk .work-top__site { font-size: 14px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk .copy-link-btn {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
+}
+.desk .copy-link-btn:hover { background: #f6f7f8; color: var(--ink); border-color: #c7ccd2; }
+.desk .work-top__user { position: relative; display: flex; align-items: center; gap: 10px; }
+.desk .work-top__email { font-size: 13px; color: var(--ink-2); }
+.desk .user-btn {
+  display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--line-2); color: var(--ink-2); flex-shrink: 0; cursor: pointer;
+}
+.desk .user-btn:hover { background: var(--line); color: var(--ink); }
+.desk .user-btn[aria-expanded='true'] { background: var(--ink); color: #fff; }
+.desk .user-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; min-width: 190px; z-index: 5;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 30px rgba(21, 24, 28, 0.14);
+  padding: 6px; display: grid; gap: 2px;
+}
+.desk .user-menu > button, .desk .user-menu > a {
+  display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 7px; font-size: 13.5px; color: var(--ink); text-decoration: none;
+  cursor: pointer;
+}
+.desk .user-menu > button:hover, .desk .user-menu > a:hover { background: var(--line-2); }
+.desk .work h1 { font-size: 30px; line-height: 1.18; letter-spacing: -0.028em; font-weight: 600; max-width: 22ch; }
 
 .desk .focus { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 18px; max-width: 760px; }
 .desk .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 13px; color: var(--ink-2); }
@@ -237,13 +275,14 @@
 .desk .editor .options input { accent-color: var(--brand); }
 .desk .editor .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/* keyboard hint bar */
-.desk .hints {
-  position: fixed; left: 288px; bottom: 16px; display: flex; gap: 14px; align-items: center;
-  font-size: 12.5px; color: var(--ink-3); background: rgba(255, 255, 255, 0.86); backdrop-filter: blur(6px);
-  border: 1px solid var(--line); border-radius: 30px; padding: 7px 14px; z-index: 30;
+/* "Adjust my research" / "Adjust focus" popup */
+.desk .focus-modal-scrim {
+  position: fixed; inset: 0; z-index: 55; background: rgba(21, 24, 28, 0.38);
+  display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto;
 }
-.desk .hints span { display: inline-flex; align-items: center; gap: 4px; }
+.desk .focus-modal { position: relative; width: 100%; max-width: 640px; }
+.desk .focus-modal .editor { margin-top: 0; max-width: none; max-height: calc(90vh - 40px); overflow: auto; }
+.desk .focus-modal__close { position: absolute; top: -14px; right: -14px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(21, 24, 28, 0.14); }
 
 /* ================= DRAWER / SHEET ================= */
 .desk .scrim { position: fixed; inset: 0; background: rgba(21, 24, 28, 0.38); opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0.18s ease; z-index: 40; }
@@ -325,23 +364,21 @@
 /* ================= RESPONSIVE ================= */
 @media (max-width: 1040px) {
   .desk .app { grid-template-columns: 1fr; }
-  .desk .rail { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 14px; }
-  .desk .rail-facts, .desk .rail-link p { display: none; }
-  .desk .rail-nav { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 4px; order: 3; }
-  .desk .rail-nav .sep { display: none; }
-  .desk .rail-nav > button, .desk .rail-nav > a { width: auto; padding: 7px 11px; }
-  .desk .rail-card { display: flex; align-items: center; gap: 14px; padding: 10px 14px; }
-  .desk .days { font-size: 17px; margin: 0; }
-  .desk .days small { display: inline; margin-left: 7px; }
+  .desk .rail { position: static; height: auto; overflow: visible; flex-direction: row; align-items: center; gap: 14px; }
+  .desk .rail-facts, .desk .rail-card { display: none; }
+  .desk .rail > .rail-nav { display: none; }
+  .desk .rail-burger { display: flex; }
+  .desk .mobile-agent-bar { display: flex; }
   .desk .track { display: none; }
-  .desk .rail-link { margin: 0 0 0 auto; max-width: 280px; }
-  .desk .work { padding: 24px 20px 96px; }
+  .desk .user-btn { display: none; }
+  .desk .copy-link-btn { display: none; }
+  .desk .topbar { padding: 12px 20px; }
+  .desk .work { padding: 24px 20px calc(96px + 64px); }
   .desk .work h1 { font-size: 25px; }
   .desk .focus-card h1 { font-size: 24px; }
-  .desk .hints { display: none; }
 }
 @media (max-width: 720px) {
-  .desk .rail-link { margin: 0; max-width: none; flex: 1 1 100%; }
+  .desk .work-top__email { display: none; }
   .desk .drawer {
     top: auto; bottom: 0; right: 0; left: 0; width: 100%; height: 92dvh;
     border-left: none; border-top: 1px solid var(--line); border-radius: 16px 16px 0 0;
