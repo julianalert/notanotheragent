@@ -4,14 +4,9 @@ import type { ReactNode } from 'react'
 
 export function Logo() {
   return (
-    <span className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap text-mist-950 dark:text-white">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="size-6" aria-hidden="true">
-        <circle cx="12" cy="12" r="9.25" />
-        <circle cx="12" cy="12" r="5.25" strokeOpacity={0.5} />
-        <path d="M12 12 18.5 5.5" strokeLinecap="round" />
-        <circle cx="12" cy="12" r="1.25" fill="currentColor" stroke="none" />
-      </svg>
-      <span className="font-display text-2xl/8 tracking-tight">Not Another Agent</span>
+    <span className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white p-1 shadow-xs">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/logo.png" alt="Not Another Agent" className="h-5 w-auto" />
     </span>
   )
 }

@@ -52,8 +52,10 @@ export function Rail({
   return (
     <aside className="rail" aria-label="Radar">
       <Link href="/" className="brand">
-        <i aria-hidden="true" />
-        Not Another Agent
+        <span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Not Another Agent" />
+        </span>
       </Link>
 
       <nav className="rail-nav" aria-label="Lead views">
