@@ -41,7 +41,7 @@ export function Pricing() {
               ))}
             </ul>
             <ButtonLink href="#start" color="accent" className="mt-auto self-start">
-              Find my first leads
+              Get my first leads
             </ButtonLink>
           </div>
           <div className="flex flex-col gap-5 rounded-2xl border border-mist-950 bg-mist-950 p-7 text-white dark:border-white dark:bg-white dark:text-mist-950">

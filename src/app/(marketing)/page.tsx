@@ -49,7 +49,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             </ButtonLink>
           ) : (
             <ButtonLink href="#start" color="accent" className="max-sm:hidden">
-              Find my first leads
+              Get my first leads
             </ButtonLink>
           )
         }
@@ -253,7 +253,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           cta={
             <div className="flex items-center gap-4">
               <ButtonLink href="#start" size="lg" color="accent">
-                Find my first leads
+                Get my first leads
               </ButtonLink>
               <PlainButtonLink href="#how-it-works" size="lg">
                 How it works <ArrowNarrowRightIcon />

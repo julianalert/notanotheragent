@@ -5,7 +5,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExt
 import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
 import { copyText, countWord, groupLabel, localDateKey, relativeMoment, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
-import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, stageFor } from './screens'
+import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, STEPS, stageFor } from './screens'
 
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 60000
@@ -113,7 +113,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     let message = ''
     if (run?.status === 'failed') message = 'Research could not be completed.'
     else if (run?.retrying) message = 'Research is being retried.'
-    else if (run) message = ['Website received', 'Researching your business', 'Checking every claim', 'Your leads are ready', 'Your leads are ready'][stageFor(run).active]
+    else if (run) message = STEPS[Math.min(stageFor(run).active, STEPS.length - 1)].label
     if (message && message !== lastStage.current) {
       lastStage.current = message
       setAnnouncement(message)
@@ -441,6 +441,37 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
   /* ----------------------------- Render ----------------------------- */
 
+  if (screen === 'searching') {
+    return (
+      <div className="desk desk--focus">
+        <div role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </div>
+        <header className="focus-nav">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <span className="brand-mark">
+            <img src="/logo.png" alt="Not Another Agent" />
+          </span>
+        </header>
+        <main className="focus-main">
+          <div className="focus-card">
+            <p className="eyebrow">{view.websiteHost}</p>
+            <h1>{title}</h1>
+            <Searching
+              run={holdReady && run ? { ...run, status: 'completed' } : run}
+              now={now}
+              slow={run ? now - Date.parse(run.createdAt) > view.slowRunThresholdMs : false}
+              expired={view.expired}
+              retrying={retrying}
+              retryError={retryError}
+              onRetry={retry}
+            />
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   return (
     <div className="desk" data-drawer-open={drawerOpen ? '' : undefined}>
       <div role="status" aria-live="polite" className="sr-only">
@@ -493,18 +524,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           {showFocus && editingFocus && <FocusEditor view={view} onSave={saveFocus} onClose={() => setEditingFocus(false)} />}
 
           {screen === 'email' && <EmailStep view={view} token={token} onSaved={refresh} />}
-
-          {screen === 'searching' && (
-            <Searching
-              run={holdReady && run ? { ...run, status: 'completed' } : run}
-              now={now}
-              slow={run ? now - Date.parse(run.createdAt) > view.slowRunThresholdMs : false}
-              expired={view.expired}
-              retrying={retrying}
-              retryError={retryError}
-              onRetry={retry}
-            />
-          )}
 
           {screen === 'unreadable' && <DeadEnd view={view} kind="unreadable" />}
           {screen === 'unsupported' && <DeadEnd view={view} kind="unsupported" />}

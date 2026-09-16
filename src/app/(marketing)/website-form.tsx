@@ -80,7 +80,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
           className="min-w-0 flex-1 bg-transparent px-4 text-base/7 text-mist-950 placeholder:text-mist-500 focus:outline-hidden sm:text-sm/7 dark:text-white"
         />
         <Button type="submit" size="lg" color="accent" disabled={pending} aria-disabled={pending} className="disabled:opacity-70">
-          {pending ? 'Checking…' : 'Find my first leads'}
+          {pending ? 'Checking…' : 'Get my first leads'}
         </Button>
       </div>
       {error && (

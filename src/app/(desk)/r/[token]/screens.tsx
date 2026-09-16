@@ -1,36 +1,41 @@
 'use client'
 
 import type { RadarView, RunView } from '@/lib/radars'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { DeskEmailForm, DeskWebsiteForm } from './forms'
 import { minutesAgo, relativeMoment } from './lib'
 
 /* ------------------------------ Searching ------------------------------- */
 
-const STEPS = [
+/**
+ * The research backend only reports two in-progress states (running, processing), which
+ * would make for a very static screen on a run that takes a minute or more. So the
+ * "running" state is presented as three steps here, and Searching below fakes movement
+ * through them on a timer — cosmetic only, not read from anywhere else.
+ */
+export const STEPS = [
   { label: 'Website received', detail: 'Your research job is saved. You can close this tab.' },
-  {
-    label: 'Researching your business and its buyers',
-    detail: 'Reading your pages to understand what you sell, then searching public requests and problems that match.',
-  },
-  {
-    label: 'Checking every claim against its source',
-    detail: 'Opening sources, checking dates, removing duplicates and preparing first messages.',
-  },
+  { label: 'Reading your website', detail: 'Understanding what you sell, who you serve and how you talk about it.' },
+  { label: 'Searching for buying signals', detail: 'Scanning public posts and requests for people who need this right now.' },
+  { label: 'Matching signals to your services', detail: 'Comparing what we found against your offer to keep only real fits.' },
+  { label: 'Checking every claim against its source', detail: 'Opening sources, checking dates, removing duplicates and preparing first messages.' },
   { label: 'Your leads are ready', detail: 'Opening your results.' },
 ]
 
-/** Observable backend states only; 100% is reachable once results are saved. */
+const RUNNING_SUBSTEPS = 3
+const PERCENT_BY_ACTIVE: Record<number, number> = { 1: 10, 2: 28, 3: 46, 4: 75, 6: 100 }
+
+/** Observable backend states only; the running sub-steps are faked on top of this in Searching. */
 export function stageFor(run: RunView | null): { active: number; percent: number } {
   switch (run?.status) {
     case 'running':
-      return { active: 1, percent: 25 }
+      return { active: 1, percent: PERCENT_BY_ACTIVE[1] }
     case 'processing':
-      return { active: 2, percent: 85 }
+      return { active: 4, percent: PERCENT_BY_ACTIVE[4] }
     case 'completed':
-      return { active: 4, percent: 100 }
+      return { active: 6, percent: PERCENT_BY_ACTIVE[6] }
     default:
-      return { active: 1, percent: 10 }
+      return { active: 1, percent: PERCENT_BY_ACTIVE[1] }
   }
 }
 
@@ -52,84 +57,104 @@ export function Searching({
   onRetry: () => void
 }) {
   const failed = run?.status === 'failed' || run?.status === 'cancelled'
-  const { active, percent } = stageFor(run)
+
+  // Fake movement through the "researching" sub-steps so a run that takes a while still
+  // feels like it's advancing; resets whenever the run isn't in that state, or is a new run.
+  const [subStep, setSubStep] = useState(0)
+  useEffect(() => {
+    if (run?.status !== 'running') {
+      setSubStep(0)
+      return
+    }
+    const id = setInterval(() => setSubStep((step) => Math.min(step + 1, RUNNING_SUBSTEPS - 1)), 5000)
+    return () => clearInterval(id)
+  }, [run?.status, run?.id])
+
+  const base = stageFor(run)
+  const active = run?.status === 'running' ? base.active + subStep : base.active
+  const percent = run?.status === 'running' ? PERCENT_BY_ACTIVE[base.active + subStep] : base.percent
   const stepNumber = Math.min(active + 1, STEPS.length)
 
   let helper = STEPS[Math.min(active, STEPS.length - 1)].detail
   if (run?.retrying) helper = 'The research provider had a temporary problem. We’re retrying automatically.'
-  else if (slow && active < 3) helper = 'Still researching. You can close this tab: we’ll email you when your leads are ready.'
+  else if (slow && active < STEPS.length - 2) helper = 'Still researching. You can close this tab: we’ll email you when your leads are ready.'
 
   return (
-    <div className="run">
-      <div className="run__top">
-        <b>{failed ? 'Research stopped' : active >= STEPS.length ? 'Done' : `Step ${stepNumber} of ${STEPS.length}`}</b>
-        <span>
-          {percent}%{run && !failed && ` — ${minutesAgo(run.createdAt, now)}`}
-        </span>
+    <>
+      <div className="focus-status" role="status">
+        {!failed && <span className="spinner" aria-hidden="true" />}
+        <span>{failed ? 'Research stopped' : STEPS[Math.min(active, STEPS.length - 1)].label}</span>
       </div>
-      <div
-        className={`bar-line ${failed ? 'is-failed' : ''}`}
-        role="progressbar"
-        aria-label="Research progress"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-      >
-        <i style={{ width: `${percent}%` }} />
-      </div>
-      <ol>
-        {STEPS.map((step, index) => {
-          const done = index < active
-          const current = index === active
-          const errored = failed && current
-          const className = done ? 'done' : errored ? 'failed' : current ? 'now' : 'todo'
-          return (
-            <li key={step.label} className={className}>
-              <span className="dot" aria-hidden="true">
-                {done ? '✓' : errored ? '!' : ''}
-              </span>
-              <div>
-                <b>
-                  <span className="sr-only">{done ? 'Completed: ' : errored ? 'Failed: ' : current ? 'In progress: ' : 'Pending: '}</span>
-                  {step.label}
-                </b>
-                {current && !errored && <p>{helper}</p>}
-                {errored && (
-                  <>
-                    <p>
-                      {expired
-                        ? 'This search couldn’t be completed, and the time to retry it has passed.'
-                        : run?.errorCode === 'configuration'
-                          ? 'Research is temporarily unavailable on our side. We’ve recorded the problem.'
-                          : run?.canRetry
-                            ? 'We couldn’t complete the research this time. Nothing was lost.'
-                            : 'We couldn’t complete the research for this website.'}
-                    </p>
-                    {run?.canRetry && (
-                      <button type="button" className="btn btn--brand btn--sm" style={{ marginTop: 12 }} onClick={onRetry} disabled={retrying}>
-                        {retrying ? 'Retrying…' : 'Retry research'}
-                      </button>
-                    )}
-                    {retryError && (
-                      <p role="alert" className="form-error">
-                        {retryError}
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
-            </li>
-          )
-        })}
-      </ol>
-      {!failed && (
-        <div className="skel" aria-hidden="true">
-          <i />
-          <i />
-          <i />
+      <div className="run">
+        <div className="run__top">
+          <b>{failed ? ' ' : active >= STEPS.length ? 'Done' : `Step ${stepNumber} of ${STEPS.length}`}</b>
+          <span>
+            {percent}%{run && !failed && ` — ${minutesAgo(run.createdAt, now)}`}
+          </span>
         </div>
+        <div
+          className={`bar-line ${failed ? 'is-failed' : ''}`}
+          role="progressbar"
+          aria-label="Research progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+        >
+          <i style={{ width: `${percent}%` }} />
+        </div>
+        <ol>
+          {STEPS.map((step, index) => {
+            const done = index < active
+            const current = index === active
+            const errored = failed && current
+            const className = done ? 'done' : errored ? 'failed' : current ? 'now' : 'todo'
+            return (
+              <li key={step.label} className={className}>
+                <span className="dot" aria-hidden="true">
+                  {done ? '✓' : errored ? '!' : ''}
+                </span>
+                <div>
+                  <b>
+                    <span className="sr-only">{done ? 'Completed: ' : errored ? 'Failed: ' : current ? 'In progress: ' : 'Pending: '}</span>
+                    {step.label}
+                  </b>
+                  {current && !errored && <p>{helper}</p>}
+                  {errored && (
+                    <>
+                      <p>
+                        {expired
+                          ? 'This search couldn’t be completed, and the time to retry it has passed.'
+                          : run?.errorCode === 'configuration'
+                            ? 'Research is temporarily unavailable on our side. We’ve recorded the problem.'
+                            : run?.canRetry
+                              ? 'We couldn’t complete the research this time. Nothing was lost.'
+                              : 'We couldn’t complete the research for this website.'}
+                      </p>
+                      {run?.canRetry && (
+                        <button type="button" className="btn btn--brand btn--sm" style={{ marginTop: 12 }} onClick={onRetry} disabled={retrying}>
+                          {retrying ? 'Retrying…' : 'Retry research'}
+                        </button>
+                      )}
+                      {retryError && (
+                        <p role="alert" className="form-error">
+                          {retryError}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+      </div>
+      {!failed && (
+        <p className="focus-note">
+          <span aria-hidden="true">💌</span>
+          Feel free to close this tab. We’ll email you the moment your first leads are ready.
+        </p>
       )}
-    </div>
+    </>
   )
 }
 
