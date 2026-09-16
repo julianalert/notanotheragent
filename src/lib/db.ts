@@ -115,7 +115,7 @@ alter table leads add column if not exists user_status_at timestamptz;
 
 -- research-v2: follow-up runs, v2 outcomes, diagnostics and the candidate pool.
 alter table research_runs drop constraint if exists research_runs_kind_check;
-alter table research_runs add constraint research_runs_kind_check check (kind in ('initial', 'daily', 'follow_up'));
+alter table research_runs add constraint research_runs_kind_check check (kind in ('initial', 'daily', 'follow_up', 'watch'));
 alter table research_runs drop constraint if exists research_runs_outcome_check;
 alter table research_runs add constraint research_runs_outcome_check check (outcome in (
   'qualified_results', 'candidates_unresolved', 'candidates_rejected', 'no_candidates', 'research_incomplete',
