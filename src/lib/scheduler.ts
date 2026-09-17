@@ -31,6 +31,7 @@ import {
   type Usage,
 } from './research/provider'
 import { sendPendingEmails } from './email/deliver'
+import { toJsonb } from './jsonb'
 import { localDateKey, nextDailyRunAt } from './time'
 
 const MAX_PER_TICK = 20
@@ -674,11 +675,11 @@ async function saveResults(
       const nextRun = profile && live ? nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour) : null
       await tx.query(`update radars set profile = $2, next_run_at = coalesce(next_run_at, $3) where id = $1`, [
         radar.id,
-        profileToSave ? JSON.stringify(profileToSave) : null,
+        profileToSave ? toJsonb(profileToSave) : null,
         nextRun,
       ])
     } else if (profileToSave) {
-      await tx.query(`update radars set profile = $2 where id = $1`, [radar.id, JSON.stringify(profileToSave)])
+      await tx.query(`update radars set profile = $2 where id = $1`, [radar.id, toJsonb(profileToSave)])
     }
 
     for (const lead of published) {
@@ -698,7 +699,7 @@ async function saveResults(
           lead.lead.intent,
           lead.score.total,
           now,
-          JSON.stringify(lead.lead satisfies LeadT),
+          toJsonb(lead.lead satisfies LeadT),
           topicBySource.get(lead.sourceKey) ?? null,
         ],
       )
@@ -773,11 +774,11 @@ async function saveResults(
           candidate.headline.slice(0, 500),
           candidate.decision,
           candidate.model_decision,
-          JSON.stringify(candidate.reasons),
+          toJsonb(candidate.reasons),
           candidate.date_status,
           candidate.published_date,
           candidate.score.total,
-          JSON.stringify(candidate.candidate),
+          toJsonb(candidate.candidate),
         ],
       )
     }
@@ -804,11 +805,11 @@ async function saveResults(
       [
         run.id,
         outcome,
-        JSON.stringify(usage),
+        toJsonb(usage),
         cost.toFixed(4),
-        JSON.stringify({ ...result.coverage, queries_reported: result.search_plan.proposed_queries }),
-        JSON.stringify(auditUrls),
-        JSON.stringify({
+        toJsonb({ ...result.coverage, queries_reported: result.search_plan.proposed_queries }),
+        toJsonb(auditUrls),
+        toJsonb({
           model_outcome: result.research_status,
           returned_leads: result.candidates.length,
           rejected: (qualified?.outcomes ?? [])
@@ -817,10 +818,10 @@ async function saveResults(
           held: [],
           profile_reasons: profileReasons,
         }),
-        JSON.stringify(raw ?? null),
+        toJsonb(raw ?? null),
         repairUsed,
         emailStatus,
-        JSON.stringify(diagnostics),
+        toJsonb(diagnostics),
       ],
     )
   })
@@ -872,7 +873,7 @@ async function finishFailed(runId: string, code: ErrorCode, message: string, usa
     `update research_runs set status = 'failed', error_code = $2, error = $3, usage = coalesce($4, usage),
        raw_response = coalesce($5, raw_response), completed_at = now(), lease_until = null
      where id = $1 and status <> 'completed'`,
-    [runId, code, message.slice(0, 1000), usage ? JSON.stringify(usage) : null, raw ? JSON.stringify(raw) : null],
+    [runId, code, message.slice(0, 1000), usage ? toJsonb(usage) : null, raw ? toJsonb(raw) : null],
   )
   log('runs.failed', { run: runId, code })
 }

@@ -28,12 +28,20 @@ export async function searchExa(request: SearchRequest, options: { includeDomain
   }
   let response: Response
   try {
-    response = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: { 'x-api-key': key, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(CONNECTOR_TIMEOUT_MS),
-    })
+    const send = () =>
+      fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'x-api-key': key, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(CONNECTOR_TIMEOUT_MS),
+      })
+    response = await send()
+    // Topics run side by side and Exa limits requests per second: a rate-limited search waits and tries once more
+    // instead of silently returning nothing for its topic.
+    if (response.status === 429) {
+      await new Promise((resolve) => setTimeout(resolve, 1500 + Math.random() * 1500))
+      response = await send()
+    }
   } catch (error) {
     return failed(`network: ${(error as Error).message.slice(0, 120)}`)
   }

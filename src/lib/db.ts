@@ -1,4 +1,5 @@
 import 'server-only'
+import { cleanText } from './jsonb'
 
 type Row = Record<string, unknown>
 
@@ -252,6 +253,9 @@ async function withConnectionRetry<T>(fn: () => Promise<T>) {
   }
 }
 
+/** Postgres rejects NUL characters and half surrogate pairs in text; web text and sliced messages can hold both. */
+const cleanParams = (params: unknown[]) => params.map((param) => (typeof param === 'string' ? cleanText(param) : param))
+
 async function createDatabase(): Promise<Database> {
   if (process.env.DATABASE_URL) {
     if (!/^postgres(ql)?:\/\//.test(process.env.DATABASE_URL)) {
@@ -273,7 +277,7 @@ async function createDatabase(): Promise<Database> {
     if (process.env.NODE_ENV !== 'production' || process.env.DB_AUTO_MIGRATE === '1') await pool.query(SCHEMA)
     return {
       async query<T extends Row>(sql: string, params: unknown[] = []) {
-        return (await withConnectionRetry(() => pool.query(sql, params))).rows as T[]
+        return (await withConnectionRetry(() => pool.query(sql, cleanParams(params)))).rows as T[]
       },
       async transaction(fn) {
         const connection = await pool.connect()
@@ -281,7 +285,7 @@ async function createDatabase(): Promise<Database> {
           await connection.query('begin')
           const result = await fn({
             async query<T extends Row>(sql: string, params: unknown[] = []) {
-              return (await connection.query(sql, params)).rows as T[]
+              return (await connection.query(sql, cleanParams(params))).rows as T[]
             },
           })
           await connection.query('commit')
@@ -321,14 +325,14 @@ async function createDatabase(): Promise<Database> {
   }
   return {
     query<T extends Row>(sql: string, params: unknown[] = []) {
-      return enqueue(async () => (await db.query<T>(sql, params)).rows)
+      return enqueue(async () => (await db.query<T>(sql, cleanParams(params))).rows)
     },
     transaction(fn) {
       return enqueue(() =>
         db.transaction((tx) =>
           fn({
             async query<T extends Row>(sql: string, params: unknown[] = []) {
-              return (await tx.query<T>(sql, params)).rows
+              return (await tx.query<T>(sql, cleanParams(params))).rows
             },
           }),
         ),

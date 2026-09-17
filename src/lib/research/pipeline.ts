@@ -18,6 +18,7 @@ import {
   type BusinessProfileT,
   type ResearchResultT,
 } from './contract'
+import { toJsonb } from '../jsonb'
 import { confirmHandlesFromSources, sourceKey } from './gates'
 import { fetchPage, readWebsite } from './pages'
 import { BRIEF_PROMPT, deriveTopics, QUALIFY_PROMPT, TRIAGE_PROMPT, type ResearchInput, type SearchTopic } from './prompt'
@@ -104,7 +105,7 @@ export interface PipelineStore {
 export const dbPipelineStore: PipelineStore = {
   async create(state) {
     const { query } = await import('../db')
-    const [row] = await query<{ id: string }>(`insert into pipeline_runs (state) values ($1) returning id`, [JSON.stringify(state)])
+    const [row] = await query<{ id: string }>(`insert into pipeline_runs (state) values ($1) returning id`, [toJsonb(state)])
     return row.id
   },
   async load(id) {
@@ -115,7 +116,7 @@ export const dbPipelineStore: PipelineStore = {
   },
   async save(id, state) {
     const { query } = await import('../db')
-    await query(`update pipeline_runs set state = $2, updated_at = now() where id = $1`, [id, JSON.stringify(state)])
+    await query(`update pipeline_runs set state = $2, updated_at = now() where id = $1`, [id, toJsonb(state)])
   },
 }
 
@@ -142,7 +143,16 @@ export function memoryPipelineStore(): PipelineStore & { states: Map<string, Pip
 
 const DAY_MS = 86_400_000
 const MAX_STEP_ATTEMPTS = 3
+/**
+ * A step runs inside one scheduled function call (5 minutes at most). A step killed with the function saves nothing
+ * and counts no attempt, so it would start again, and spend again, on every lease until the run deadline. Past this
+ * budget the step is abandoned as a counted, retryable attempt instead.
+ */
+const STEP_BUDGET_MS = 240_000
 const TRIAGE_BATCH = 40
+/** A failed triage batch is retried alone, after 15 s and then 30 s (rate limits are per minute). */
+const TRIAGE_BATCH_RETRIES = 2
+const TRIAGE_RETRY_PAUSE_MS = 15_000
 /** Pages read through hosted browsing per run (each is a small model call). */
 const MAX_BROWSER_READS = 8
 
@@ -222,8 +232,16 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
       if (state.step === 'failed') return { state: 'failed', code: state.error?.code ?? 'provider_failed', message: state.error?.message ?? 'Pipeline failed', usage: state.usage, raw: summary(state) }
 
       const step = state.step
+      // The state as loaded is known to be storable; the state after a step holds new web text and may not be.
+      const before = structuredClone(state)
       try {
-        const advanced = await STEPS[step](state)
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const advanced = await Promise.race([
+          STEPS[step](state),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new ResearchError('timed_out', `Step ${step} exceeded ${STEP_BUDGET_MS / 1000}s`)), STEP_BUDGET_MS)
+          }),
+        ]).finally(() => clearTimeout(timer))
         // A step that did not advance (background qualification still running) keeps the run pending.
         if (advanced) log('pipeline.step', { step, next: state.step, sources: state.sources.length, hits: state.hits.length })
       } catch (error) {
@@ -239,7 +257,24 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
         state.error = { code: failure.code, message: failure.message.slice(0, 1000) }
         log('pipeline.failed', { step, code: failure.code })
       }
-      await store.save(id, state)
+      try {
+        await store.save(id, state)
+      } catch (error) {
+        // A result that cannot be stored used to be lost silently, and the step (searches and model calls included)
+        // ran again on every tick. Count it as a failed attempt on the last storable state instead.
+        const message = (error as Error).message.slice(0, 300)
+        const attempts = (before.attempts[step] ?? 0) + 1
+        before.attempts[step] = attempts
+        before.usage = state.usage
+        log('pipeline.save_failed', { step, attempt: attempts, error: message })
+        if (attempts >= MAX_STEP_ATTEMPTS) {
+          before.step = 'failed'
+          before.error = { code: 'provider_failed', message: `Step ${step} result could not be stored: ${message}` }
+        }
+        await store.save(id, before)
+        if (before.step === 'failed') return { state: 'failed', code: 'provider_failed', message: before.error!.message, usage: before.usage, raw: summary(before) }
+        return { state: 'pending' }
+      }
       const next = stepOf(state)
       if (next === 'done') return completed(state)
       if (next === 'failed') return { state: 'failed', code: state.error!.code, message: state.error!.message, usage: state.usage, raw: summary(state) }
@@ -382,49 +417,69 @@ async function stepTriage(state: PipelineState) {
   for (let i = 0; i < hits.length; i += TRIAGE_BATCH) batches.push(hits.slice(i, i + TRIAGE_BATCH))
 
   const scores = new Map<string, { score: number; reason: string }>()
+  const scoreBatch = async (batch: typeof hits) => {
+    const response = await openai().responses.create(
+      {
+        model: SEARCH_MODEL,
+        reasoning: { effort: 'low' },
+        tools: [],
+        max_output_tokens: 8000,
+        instructions: TRIAGE_PROMPT,
+        input: JSON.stringify({
+          brief: {
+            sells: brief.sells,
+            buyers: brief.buyers,
+            recognise_buyer_in_posts: brief.recognise_buyer_in_posts,
+            buyer_problems_in_their_words: brief.buyer_problems_in_their_words,
+            trigger_situations: brief.trigger_situations,
+            not_our_buyer: brief.not_our_buyer,
+            buyer_seller_confusions: brief.buyer_seller_confusions,
+          },
+          focus_guidance: state.input.run_instructions.includes('USER FOCUS CORRECTION')
+            ? state.input.run_instructions.slice(state.input.run_instructions.indexOf('USER FOCUS CORRECTION'))
+            : null,
+          feedback: state.input.feedback,
+          hits: batch.map(({ id, hit }) => ({
+            id,
+            url: hit.url,
+            title: hit.title,
+            date: hit.publishedDate,
+            preview: (hit.text ?? hit.snippet).slice(0, 800),
+          })),
+        }),
+        text: { format: triageFormat() },
+      },
+      { timeout: 90_000 },
+    )
+    addUsage(state, smallUsage(usageOf(response)))
+    const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+    if (response.status !== 'completed' || !audit.text.trim()) throw new ResearchError('incomplete', `Triage request ${response.status}`)
+    const parsed = TriageResult.safeParse(JSON.parse(audit.text))
+    if (!parsed.success) throw new ResearchError('invalid_output', `Triage does not match the schema: ${parsed.error.message.slice(0, 200)}`)
+    for (const item of parsed.data.scores) scores.set(item.id, { score: Math.max(0, Math.min(3, Math.round(item.score))), reason: item.reason })
+  }
+  // A rate-limited or timed-out batch is retried on its own after a pause. The step only fails when no batch could
+  // be scored: repeating the batches that succeeded would spend again and hit the same limit.
+  const failures: ResearchError[] = []
   await Promise.all(
-    batches.map(async (batch) => {
-      const response = await openai().responses.create(
-        {
-          model: SEARCH_MODEL,
-          reasoning: { effort: 'low' },
-          tools: [],
-          max_output_tokens: 8000,
-          instructions: TRIAGE_PROMPT,
-          input: JSON.stringify({
-            brief: {
-              sells: brief.sells,
-              buyers: brief.buyers,
-              recognise_buyer_in_posts: brief.recognise_buyer_in_posts,
-              buyer_problems_in_their_words: brief.buyer_problems_in_their_words,
-              trigger_situations: brief.trigger_situations,
-              not_our_buyer: brief.not_our_buyer,
-              buyer_seller_confusions: brief.buyer_seller_confusions,
-            },
-            focus_guidance: state.input.run_instructions.includes('USER FOCUS CORRECTION')
-              ? state.input.run_instructions.slice(state.input.run_instructions.indexOf('USER FOCUS CORRECTION'))
-              : null,
-            feedback: state.input.feedback,
-            hits: batch.map(({ id, hit }) => ({
-              id,
-              url: hit.url,
-              title: hit.title,
-              date: hit.publishedDate,
-              preview: (hit.text ?? hit.snippet).slice(0, 800),
-            })),
-          }),
-          text: { format: triageFormat() },
-        },
-        { timeout: 90_000 },
-      )
-      addUsage(state, smallUsage(usageOf(response)))
-      const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
-      if (response.status !== 'completed' || !audit.text.trim()) throw new ResearchError('incomplete', `Triage request ${response.status}`)
-      const parsed = TriageResult.safeParse(JSON.parse(audit.text))
-      if (!parsed.success) throw new ResearchError('invalid_output', `Triage does not match the schema: ${parsed.error.message.slice(0, 200)}`)
-      for (const item of parsed.data.scores) scores.set(item.id, { score: Math.max(0, Math.min(3, Math.round(item.score))), reason: item.reason })
+    batches.map(async (batch, index) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await scoreBatch(batch)
+        } catch (error) {
+          const failure = classifyStepError(error)
+          const transient = failure.code === 'provider_transient' || failure.code === 'uncertain_creation' || failure.code === 'incomplete'
+          if (!transient || attempt >= TRIAGE_BATCH_RETRIES) {
+            log('pipeline.triage_batch_failed', { batch: index, attempts: attempt + 1, code: failure.code, message: failure.message.slice(0, 200) })
+            failures.push(failure)
+            return
+          }
+          await new Promise((resolve) => setTimeout(resolve, TRIAGE_RETRY_PAUSE_MS * (attempt + 1)))
+        }
+      }
     }),
   )
+  if (failures.length === batches.length) throw failures[0]
 
   state.triage = hits.map(({ id, hit }) => ({ id, url: hit.url, score: scores.get(id)?.score ?? 0, reason: scores.get(id)?.reason ?? 'not scored' }))
   const selected = hits

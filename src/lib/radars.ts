@@ -2,6 +2,7 @@ import 'server-only'
 import { config } from './config'
 import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
+import { toJsonb } from './jsonb'
 import { agentLive, type Plan } from './billing/subscription'
 import type { BusinessProfileT, DismissReason, Focus, LeadT, RunOutcome } from './research/contract'
 import { getProvider } from './research/provider'
@@ -376,7 +377,7 @@ export async function updateFocus(radar: RadarRow, focus: Focus | null) {
     focus = { services: focus.services.filter((service) => allowed.has(service)), market: focus.market, wanted: text(focus.wanted), avoid: text(focus.avoid) }
     if (!focus.services.length && !focus.market && !focus.wanted && !focus.avoid) focus = null
   }
-  await query(`update radars set focus = $2 where id = $1`, [radar.id, focus ? JSON.stringify(focus) : null])
+  await query(`update radars set focus = $2 where id = $1`, [radar.id, focus ? toJsonb(focus) : null])
 }
 
 /** Changing timezone only moves the next morning run. The research deadline is immutable. */
