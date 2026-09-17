@@ -401,6 +401,8 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   else title = `${countWord(counts.today)} lead${counts.today === 1 ? '' : 's'} to review`
 
   const showFocus = view.focus && (screen === 'leads' || screen === 'empty')
+  // When the agent sleeps, one promo sits third in Today so the value is visible where the leads are.
+  const showPromo = deskView === 'today' && !view.agentLive && view.billingConfigured && view.plan !== 'active' && rows.length > 2
 
   const groups = useMemo(() => {
     if (deskView !== 'today') return [{ key: deskView, label: deskView === 'contacted' ? 'Contacted' : 'Dismissed', leads: rows }]
@@ -604,8 +606,8 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                       {group.leads.map((lead) => {
                         const index = rows.findIndex((item) => item.id === lead.id)
                         return (
+                          <Fragment key={lead.id}>
                           <LeadItem
-                            key={lead.id}
                             lead={lead}
                             now={view.now}
                             timezone={view.timezone}
@@ -616,6 +618,28 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                             }}
                             onRestore={() => setStatus(lead, 'new', 'Moved back to Today')}
                           />
+                          {showPromo && index === 1 && (
+                            <div className="promo">
+                              <div>
+                                <p className="promo__title">Wake up to companies that need exactly what your agency sells</p>
+                                <p className="promo__text">
+                                  Your agent searches every morning, watches your buyers’ communities through the day and emails you the moment
+                                  someone asks for what you sell.
+                                </p>
+                              </div>
+                              <div className="promo__side">
+                                <p className="promo__price">
+                                  ${view.priceUsd}
+                                  <small>/ month</small>
+                                </p>
+                                <button type="button" className="btn btn--brand" onClick={() => billing('/checkout')} disabled={activating}>
+                                  {activating ? 'Opening checkout…' : view.plan === 'free' ? 'Activate my agent' : 'Reactivate my agent'}
+                                </button>
+                                <p className="promo__fine">Cancel any time</p>
+                              </div>
+                            </div>
+                          )}
+                          </Fragment>
                         )
                       })}
                     </div>
