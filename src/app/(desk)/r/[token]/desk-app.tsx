@@ -388,7 +388,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   /* ----------------------------- Header ----------------------------- */
 
   const todayKey = localDateKey(view.now, view.timezone)
-  const foundToday = view.leads.some((lead) => lead.status === 'new' && localDateKey(lead.discoveredAt, view.timezone) === todayKey)
   const foundTodayCount = view.leads.filter((lead) => localDateKey(lead.discoveredAt, view.timezone) === todayKey).length
 
   let title: string
@@ -399,7 +398,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   else if (deskView === 'contacted') title = 'Leads you have reached out to'
   else if (deskView === 'dismissed') title = 'Leads you set aside'
   else if (counts.today === 0) title = 'Everything has been handled'
-  else title = `${countWord(counts.today)} strong match${counts.today === 1 ? '' : 'es'} ${foundToday ? 'today' : 'to review'}`
+  else title = `${countWord(counts.today)} lead${counts.today === 1 ? '' : 's'} to review`
 
   const showFocus = view.focus && (screen === 'leads' || screen === 'empty')
 
