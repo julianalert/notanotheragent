@@ -73,8 +73,13 @@
 .desk .rail-nav > [aria-current='true'] { background: var(--rail-2); color: var(--rail-ink); font-weight: 500; }
 .desk .rail-nav em { font-style: normal; font-size: 13px; color: var(--rail-dim); }
 
-.desk .rail-facts--next { margin-top: auto; }
-.desk .rail-facts--next + .rail-card { margin-top: -10px; }
+.desk .rail-card .link { color: var(--rail-ink); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.desk .rail-card select {
+  margin-top: 10px; width: 100%; font: inherit; font-size: 13px; padding: 7px 8px; border-radius: 8px;
+  background: #101216; border: 1px solid var(--rail-3); color: var(--rail-ink);
+}
+.desk .rail-facts--hook { margin-top: auto; }
+.desk .rail-facts--hook + .rail-card { margin-top: 0; }
 .desk .rail-card { margin-top: auto; background: var(--rail-2); border-radius: var(--r); padding: 15px; }
 .desk .rail-card--pitch {
   position: relative; overflow: hidden; padding: 18px 16px 16px;
@@ -269,7 +274,7 @@
 .desk .msg__tools .chip { height: 26px; display: inline-flex; align-items: center; font-size: 12px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--ink-2); cursor: pointer; }
 .desk .msg__tools .chip:hover { border-color: #c7ccd2; color: var(--ink); }
 .desk .msg__tools .chip.is-on { border-color: var(--ink); color: var(--ink); }
-.desk .msg__rewrite { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-left: auto; }
+.desk .msg__rewrite { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .desk .msg__rewrite .link {
   height: 26px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 999px;
   border: 1px dashed var(--line); background: #fff; color: var(--ink-2); font-size: 12px; cursor: pointer;

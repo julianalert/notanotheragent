@@ -4,7 +4,7 @@ import { CheckmarkIcon } from '@/components/icons/checkmark-icon'
 import type { RadarView } from '@/lib/radars'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { relativeDay, relativeMoment } from './lib'
+import { clock, relativeDay } from './lib'
 
 export type DeskView = 'today' | 'contacted' | 'dismissed'
 
@@ -44,7 +44,8 @@ export function Rail({
   const firstSearchDone = view.initialRun?.status === 'completed' && Boolean(view.profileServices.length)
   const canActivate = view.billingConfigured && firstSearchDone && view.plan !== 'active'
   const canManageBilling = view.billingConfigured && view.plan !== 'free'
-  const liveSummary = `lead${foundToday === 1 ? '' : 's'} found today${view.nextRunAt ? `, next search ${relativeDay(view.nextRunAt, view.now, view.timezone)}` : ''}`
+  const nextSearch = view.nextRunAt ? `${relativeDay(view.nextRunAt, view.now, view.timezone)} ${clock(view.nextRunAt, view.timezone)}` : null
+  const liveSummary = `lead${foundToday === 1 ? '' : 's'} found today${nextSearch ? `, next search ${nextSearch}, ${view.timezone}` : ''}`
 
   // Close the mobile/tablet burger menu when clicking anywhere outside it.
   useEffect(() => {
@@ -72,8 +73,40 @@ export function Rail({
       </span>
       <p className="days">
         {foundToday}
-        <small>{liveSummary}</small>
+        <small>
+          {liveSummary}
+          {nextSearch && (
+            <>
+              {' '}
+              <button type="button" className="link" onClick={() => setEditingTz((value) => !value)}>
+                {editingTz ? 'Cancel' : 'Change'}
+              </button>
+            </>
+          )}
+        </small>
       </p>
+      {editingTz && (
+        <>
+          <label htmlFor="desk-timezone" className="sr-only">
+            Timezone for the morning search
+          </label>
+          <select
+            id="desk-timezone"
+            defaultValue={view.timezone}
+            onChange={async (event) => {
+              await onTimezoneChange(event.target.value)
+              setEditingTz(false)
+            }}
+          >
+            {!zones.includes(view.timezone) && <option value={view.timezone}>{view.timezone}</option>}
+            {zones.map((zone) => (
+              <option key={zone} value={zone}>
+                {zone}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
       {view.plan === 'past_due' && (
         <>
           <p className="rail-warn">Your last payment failed. Update your card to keep the agent running.</p>
@@ -135,43 +168,6 @@ export function Rail({
               </button>
             ))}
           </nav>
-        )}
-
-        {viewsEnabled && view.agentLive && (
-          <div className="rail-facts">
-            <div>
-              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
-              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
-              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
-                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
-              </button>
-              {editingHook && (
-                <form
-                  className="rail-form"
-                  onSubmit={async (event) => {
-                    event.preventDefault()
-                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
-                    const problem = await onWebhook(url)
-                    setHookError(problem)
-                    if (!problem) setEditingHook(false)
-                  }}
-                >
-                  <label htmlFor="desk-webhook" className="sr-only">
-                    Webhook URL
-                  </label>
-                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
-                  <button type="submit" className="btn btn--line btn--sm">
-                    Save
-                  </button>
-                  {hookError && (
-                    <p role="alert" className="form-error">
-                      {hookError}
-                    </p>
-                  )}
-                </form>
-              )}
-            </div>
-          </div>
         )}
 
         {/* Mobile/tablet only: nav + account actions combined into one menu (see desk.css breakpoints). */}
@@ -240,39 +236,40 @@ export function Rail({
           )}
         </div>
 
-        {view.agentLive && view.nextRunAt && (
-          <div className="rail-facts rail-facts--next">
-            {view.nextRunAt && (
-              <div>
-                <b>{capitalise(relativeMoment(view.nextRunAt, view.now, view.timezone))}</b>
-                Next morning search — {view.timezone},{' '}
-                <button type="button" className="link" onClick={() => setEditingTz((value) => !value)}>
-                  {editingTz ? 'cancel' : 'change'}
-                </button>
-                {editingTz && (
-                  <>
-                    <label htmlFor="desk-timezone" className="sr-only">
-                      Timezone for the 8:00 search
-                    </label>
-                    <select
-                      id="desk-timezone"
-                      defaultValue={view.timezone}
-                      onChange={async (event) => {
-                        await onTimezoneChange(event.target.value)
-                        setEditingTz(false)
-                      }}
-                    >
-                      {!zones.includes(view.timezone) && <option value={view.timezone}>{view.timezone}</option>}
-                      {zones.map((zone) => (
-                        <option key={zone} value={zone}>
-                          {zone}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
-              </div>
-            )}
+        {viewsEnabled && view.agentLive && (
+          <div className="rail-facts rail-facts--hook">
+            <div>
+              <b>{view.webhookUrl ? 'Also posted to Slack' : 'Slack or webhook'}</b>
+              {view.webhookUrl ? 'New leads go to your webhook too, ' : 'Post new leads to a channel, '}
+              <button type="button" className="link" onClick={() => setEditingHook((value) => !value)}>
+                {editingHook ? 'cancel' : view.webhookUrl ? 'change' : 'set up'}
+              </button>
+              {editingHook && (
+                <form
+                  className="rail-form"
+                  onSubmit={async (event) => {
+                    event.preventDefault()
+                    const url = String(new FormData(event.currentTarget).get('url') ?? '').trim()
+                    const problem = await onWebhook(url)
+                    setHookError(problem)
+                    if (!problem) setEditingHook(false)
+                  }}
+                >
+                  <label htmlFor="desk-webhook" className="sr-only">
+                    Webhook URL
+                  </label>
+                  <input id="desk-webhook" name="url" defaultValue={view.webhookUrl ?? ''} placeholder="https://hooks.slack.com/services/…" inputMode="url" />
+                  <button type="submit" className="btn btn--line btn--sm">
+                    Save
+                  </button>
+                  {hookError && (
+                    <p role="alert" className="form-error">
+                      {hookError}
+                    </p>
+                  )}
+                </form>
+              )}
+            </div>
           </div>
         )}
 
@@ -304,8 +301,4 @@ export function Rail({
       )}
     </>
   )
-}
-
-function capitalise(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1)
 }
