@@ -36,7 +36,7 @@
   --danger: #b42318;
 
   --r: 11px;
-  --drawer: 640px;
+  --drawer: 820px;
 
   color-scheme: light;
   min-height: 100dvh;
@@ -398,12 +398,12 @@
 .desk .drawer__body { overflow: auto; padding: 24px 28px 28px; flex: 1; -webkit-overflow-scrolling: touch; }
 .desk .head-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13.5px; color: var(--ink-3); }
 .desk .head-tags a { color: var(--ink-2); }
-.desk .drawer h2 { font-size: 24px; line-height: 1.24; letter-spacing: -0.022em; font-weight: 600; margin: 14px 0 6px; max-width: 26ch; }
+.desk .drawer h2 { font-size: 24px; line-height: 1.24; letter-spacing: -0.022em; font-weight: 600; margin: 14px 0 6px; }
 .desk .who { font-size: 14px; color: var(--ink-2); }
 .desk .state-note { margin-top: 14px; padding: 10px 14px; border-radius: 8px; background: #f1f3f4; font-size: 13.5px; color: var(--ink-2); }
 
 .desk .evidence { margin-top: 20px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.desk .evidence blockquote { padding: 20px 22px; border-left: 3px solid var(--i-problem-accent); font-size: 19px; line-height: 1.5; max-width: 44ch; }
+.desk .evidence blockquote { padding: 20px 22px; border-left: 3px solid var(--i-problem-accent); font-size: 19px; line-height: 1.5; }
 .desk .evidence.is-request blockquote { border-left-color: var(--i-request-accent); }
 .desk .evidence.is-trigger blockquote { border-left-color: var(--i-trigger-accent); }
 .desk .evidence__meta { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 22px; border-top: 1px solid var(--line-2); background: #fafbfb; font-size: 13px; color: var(--ink-3); }
@@ -411,18 +411,18 @@
 
 .desk .sec { padding-top: 22px; margin-top: 22px; border-top: 1px solid var(--line-2); }
 .desk .sec h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-.desk .sec p { color: var(--ink-2); max-width: 62ch; }
+.desk .sec p { color: var(--ink-2); }
 .desk .flag { display: inline-block; margin-top: 10px; font-size: 13px; color: var(--request); background: var(--request-bg); border-radius: 6px; padding: 3px 9px; }
 .desk .service { display: inline-block; margin-bottom: 8px; font-size: 13px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
 .desk .checks { display: grid; gap: 8px; margin-top: 6px; }
-.desk .checks li { display: flex; gap: 10px; color: var(--ink-2); max-width: 62ch; }
+.desk .checks li { display: flex; gap: 10px; color: var(--ink-2); }
 .desk .checks li::before { content: ''; flex: none; width: 5px; height: 5px; margin-top: 10px; border-radius: 50%; background: #c3c9d0; }
 
 .desk .msg { margin-top: 22px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
 .desk .msg__top { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 18px; border-bottom: 1px solid var(--line-2); }
 .desk .msg__top h3 { font-size: 15px; font-weight: 600; }
 .desk .msg__top small { font-size: 13px; color: var(--ink-3); font-weight: 400; margin-left: 6px; }
-.desk .msg__body { padding: 18px; background: #fbfbfa; line-height: 1.65; max-width: 64ch; white-space: pre-line; }
+.desk .msg__body { padding: 18px; background: #fbfbfa; line-height: 1.65; white-space: pre-line; }
 .desk .msg textarea { display: block; width: 100%; min-height: 190px; padding: 18px; border: 0; background: #fbfbfa; font: inherit; line-height: 1.65; color: var(--ink); resize: vertical; }
 
 .desk .facts { margin-top: 22px; border-top: 1px solid var(--line-2); }
