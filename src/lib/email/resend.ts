@@ -1,3 +1,5 @@
+import { BRAND } from './templates'
+
 export type OutgoingEmail = {
   to: string
   subject: string
@@ -9,6 +11,18 @@ export type OutgoingEmail = {
 }
 
 export type SendResult = { ok: true; id: string | null; preview?: string } | { ok: false; retryable: boolean; error: string }
+
+/** "Name <address>": a bare address without a sender name looks unfinished to spam filters. */
+function sender() {
+  const from = process.env.EMAIL_FROM!.trim()
+  return from.includes('<') ? from : `${BRAND} <${from}>`
+}
+
+/** Replies go to EMAIL_REPLY_TO when set, otherwise to the sending address. */
+function replyTo() {
+  const from = process.env.EMAIL_FROM!.trim()
+  return process.env.EMAIL_REPLY_TO?.trim() || (from.match(/<([^>]+)>/)?.[1] ?? from)
+}
 
 export function emailConfigured() {
   return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM)
@@ -39,7 +53,8 @@ export async function sendEmail(email: OutgoingEmail): Promise<SendResult> {
         'Idempotency-Key': email.idempotencyKey,
       },
       body: JSON.stringify({
-        from: process.env.EMAIL_FROM,
+        from: sender(),
+        reply_to: replyTo(),
         to: [email.to],
         subject: email.subject,
         html: email.html,

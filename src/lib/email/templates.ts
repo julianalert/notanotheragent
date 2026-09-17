@@ -3,7 +3,8 @@ import type { LeadT, RunOutcome } from '../research/contract'
 /*
  * Plain, table-based HTML with inline styles so it renders across mail clients, using the Oatmeal mist palette
  * and the orange-to-rose accent. Every model- or web-derived string is escaped. Every link carries its own colour
- * and decoration, and bare domains are broken with a zero-width space so Gmail does not turn them into blue links.
+ * and decoration. Bare domains are split with an inline tag so Gmail does not turn them into blue links; no hidden
+ * characters are used, since spam filters treat them as obfuscation.
  */
 
 export const BRAND = 'Not Another Agent'
@@ -12,8 +13,8 @@ export function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 }
 
-/** A domain shown as text, not as an auto-detected link: a zero-width space after each dot defeats the linkifier. */
-const plainDomain = (host: string) => escapeHtml(host).replace(/\./g, '.&#8203;')
+/** A domain shown as text, not as an auto-detected link: wrapping each dot in a span defeats the linkifier. */
+const plainDomain = (host: string) => escapeHtml(host).replace(/\./g, '<span>.</span>')
 
 const formatDate = (value: string) =>
   new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(
@@ -46,24 +47,24 @@ function subjectFor(input: RunEmailInput) {
   const count = input.leads.length
   if (input.kind === 'instant') {
     const headline = input.leads[0]?.data.headline ?? 'a new request'
-    return `Someone just asked for what you sell: ${headline.length > 70 ? `${headline.slice(0, 67).trimEnd()}…` : headline}`
+    return `New request: ${headline.length > 70 ? `${headline.slice(0, 67).trimEnd()}…` : headline}`
   }
-  if (input.kind === 'daily') return `${count} new ${plural(count, 'lead', 'leads')} for ${input.websiteHost}`
-  if (count > 0) return `Your first ${count} ${plural(count, 'lead is', 'leads are')} ready for ${input.websiteHost}`
+  if (input.kind === 'daily') return `${count} new ${plural(count, 'match', 'matches')} for ${input.websiteHost}`
+  if (count > 0) return `Your first ${count} ${plural(count, 'match is', 'matches are')} ready for ${input.websiteHost}`
   if (input.outcome === 'website_unreadable' || input.outcome === 'unsupported_business') {
     return `We couldn’t research ${input.websiteHost} yet`
   }
-  return `Your lead research for ${input.websiteHost} has started`
+  return `Your research for ${input.websiteHost} has started`
 }
 
 /** Headline inside the email: short, no domain (the website is named above it). */
 function headlineFor(input: RunEmailInput) {
   const count = input.leads.length
-  if (input.kind === 'instant') return count === 1 ? 'Someone just asked for what you sell' : `${count} people just asked for what you sell`
-  if (input.kind === 'daily') return `${count} new ${plural(count, 'lead', 'leads')} this morning`
-  if (count > 0) return `Your first ${count} ${plural(count, 'lead is', 'leads are')} ready`
+  if (input.kind === 'instant') return count === 1 ? 'A new request matches your work' : `${count} new requests match your work`
+  if (input.kind === 'daily') return `${count} new ${plural(count, 'match', 'matches')} this morning`
+  if (count > 0) return `Your first ${count} ${plural(count, 'match is', 'matches are')} ready`
   if (input.outcome === 'website_unreadable' || input.outcome === 'unsupported_business') return 'We couldn’t research your website yet'
-  return 'Your lead research has started'
+  return 'Your research has started'
 }
 
 function introFor(input: RunEmailInput) {
@@ -71,12 +72,12 @@ function introFor(input: RunEmailInput) {
   if (count > 0) {
     if (input.kind === 'instant') {
       return count === 1
-        ? 'Your agent was watching and just found a public request that matches what you sell. Early replies get answered.'
-        : `Your agent was watching and just found ${count} public requests that match what you sell. Early replies get answered.`
+        ? 'Your agent just spotted a public post that matches what you offer. People tend to answer the first replies.'
+        : `Your agent just spotted ${count} public posts that match what you offer. People tend to answer the first replies.`
     }
     return input.kind === 'daily'
-      ? `This morning’s search found ${count} new ${plural(count, 'opportunity', 'opportunities')} that ${plural(count, 'matches', 'match')} what you sell.`
-      : `We read your website and found ${count} ${plural(count, 'opportunity', 'opportunities')} with public evidence that they need what you sell.`
+      ? `This morning’s search found ${count} new public ${plural(count, 'post', 'posts')} from people who may need what you offer.`
+      : `We read your website and found ${count} public ${plural(count, 'post', 'posts')} from people who need what you offer.`
   }
   if (input.outcome === 'website_unreadable') {
     return 'We couldn’t read enough of your website to understand what you sell. Open your page and try a services-page URL.'
@@ -87,8 +88,7 @@ function introFor(input: RunEmailInput) {
   return 'We couldn’t verify any strong matches today. We never pad the list, and we’ll search again every morning.'
 }
 
-function footerFor(input: RunEmailInput) {
-  const host = plainDomain(input.websiteHost)
+function footerFor(input: RunEmailInput, host: string) {
   switch (input.plan) {
     case 'past_due':
       return `Your last payment failed. Update your card on your private page to keep the agent searching for ${host}.`
@@ -112,10 +112,9 @@ function leadHtml(lead: { id: string; data: LeadT }, privateUrl: string) {
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${SOFT};border-radius:12px">
       <tr><td style="padding:20px 22px">
         <p style="margin:0 0 8px;font:600 12px/18px ${SANS};color:${MUTED}">${escapeHtml(label)} &middot; ${escapeHtml(d.source_platform)} &middot; ${when}</p>
-        <p style="margin:0 0 6px;font:500 17px/24px ${SANS};color:${INK}">${escapeHtml(d.headline)}</p>
+        <p style="margin:0 0 6px;font:500 17px/24px ${SANS};color:${INK}"><a href="${escapeHtml(`${privateUrl}#lead-${lead.id}`)}" style="color:${INK};text-decoration:none">${escapeHtml(d.headline)} <span style="color:${MUTED}">&rarr;</span></a></p>
         <p style="margin:0 0 12px;font:400 13px/20px ${SANS};color:${MUTED}">${escapeHtml(who)}</p>
-        ${quote ? `<p style="margin:0 0 14px;padding-left:12px;border-left:2px solid ${LINE};font:400 14px/22px ${SANS};color:${INK}">“${escapeHtml(quote.excerpt)}”</p>` : ''}
-        <a href="${escapeHtml(`${privateUrl}#lead-${lead.id}`)}" style="display:inline-block;padding:7px 14px;border:1px solid ${INK};border-radius:999px;font:600 13px/18px ${SANS};color:${INK};text-decoration:none">See evidence and first message &rarr;</a>
+        ${quote ? `<p style="margin:0;padding-left:12px;border-left:2px solid ${LINE};font:400 14px/22px ${SANS};color:${INK}">“${escapeHtml(quote.excerpt)}”</p>` : ''}
       </td></tr>
     </table>
   </td></tr>`
@@ -125,16 +124,16 @@ export function renderRunEmail(input: RunEmailInput) {
   const subject = subjectFor(input)
   const headline = headlineFor(input)
   const intro = introFor(input)
-  const cta = input.leads.length ? 'Open all leads' : 'Open your private page'
+  const cta = input.leads.length ? 'See all matches and first messages' : 'Open your private page'
   const live = input.plan === 'active' || input.plan === 'past_due'
-  const footer = footerFor(input)
+  const footer = footerFor(input, plainDomain(input.websiteHost))
   const activateUrl = `${input.privateUrl}#activate`
   const preheader = input.leads[0]?.data.headline ?? intro
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(subject)}</title></head>
 <body style="margin:0;padding:0;background:#f5f6f6;color:${INK}">
-  <div style="display:none;max-height:0;overflow:hidden;font-size:1px;line-height:1px;color:#f5f6f6">${escapeHtml(preheader)}&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;&#8203;&nbsp;</div>
+  <div style="display:none;max-height:0;overflow:hidden;font-size:1px;line-height:1px;color:#f5f6f6">${escapeHtml(preheader)}</div>
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6f6">
     <tr><td align="center" style="padding:32px 16px">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px">
@@ -168,7 +167,7 @@ export function renderRunEmail(input: RunEmailInput) {
   </table>
 </body></html>`
 
-  const textFooter = footer.replace(/&#8203;/g, '').replace(/&amp;/g, '&')
+  const textFooter = footerFor(input, input.websiteHost)
   const text = [
     headline,
     '',

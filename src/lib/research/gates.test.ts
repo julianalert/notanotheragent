@@ -553,7 +553,9 @@ describe('email delivery helpers', () => {
       plan: 'free',
     })
     expect(email.html).toContain('Activate my agent')
-    expect(email.subject).toBe('1 new lead for example.com')
+    expect(email.subject).toBe('1 new match for example.com')
+    expect(email.html).not.toMatch(/&#8203;|\u200b/)
+    expect(email.html.match(/app\.example\/r\/token#lead-l1/g)).toHaveLength(1)
     expect(email.html).not.toContain('<script>')
     expect(email.html).toContain('&lt;script&gt;')
   })
