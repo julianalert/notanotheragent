@@ -5,8 +5,8 @@ import { ClockIcon } from '@/components/icons/clock-icon'
 import { SourceIcon } from '@/components/icons/source-icon'
 import type { LeadView } from '@/lib/radars'
 import type { EvidenceT } from '@/lib/research/contract'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { calendarDate, foundLabel, hostOf, publishedAgo, shortDate } from './lib'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { calendarDate, hostOf, publishedAgo, shortDate } from './lib'
 
 const CONTACT_KIND = {
   original_post: 'Reply on the original post',
@@ -36,6 +36,41 @@ function excerptOf(lead: LeadView) {
   return d.need_evidence_ids.map((id) => d.evidence.find((item) => item.id === id)).find((item) => item?.excerpt.trim())
 }
 
+function intentKey(lead: LeadView) {
+  return lead.data.intent === 'explicit_request' ? 'request' : lead.data.intent === 'trigger_event' ? 'trigger' : 'problem'
+}
+
+/** "From <name> on <site>" with an initial badge and the site's icon; shared by the list and the drawer. */
+function Byline({ lead, details, linkSource = false }: { lead: LeadView; details?: ReactNode; linkSource?: boolean }) {
+  const d = lead.data
+  const named = d.person_name ?? d.public_handle ?? d.company_name
+  const host = hostOf(d.source_url)
+  const site = (
+    <>
+      <SourceIcon host={host} />
+      {host}
+    </>
+  )
+  return (
+    <span className="item__byline" style={{ '--accent': `var(--i-${intentKey(lead)}-accent)` } as CSSProperties}>
+      <span className="item__avatar" aria-hidden="true">
+        {named ? named.replace(/^@/, '').charAt(0).toUpperCase() : '?'}
+      </span>
+      <span className="item__byline-text">
+        {named ? (
+          <>
+            From <b>{named}</b>
+            {details} on
+          </>
+        ) : (
+          'Posted on'
+        )}
+      </span>
+      <span className="item__host">{linkSource ? <External href={d.source_url}>{site}</External> : site}</span>
+    </span>
+  )
+}
+
 /* --------------------------------- List --------------------------------- */
 
 export function LeadItem({
@@ -56,9 +91,7 @@ export function LeadItem({
   const d = lead.data
   const quote = excerptOf(lead)
   const note = statusNote(lead, timezone)
-  const named = d.person_name ?? d.public_handle ?? d.company_name
-  const host = hostOf(d.source_url)
-  const intent = d.intent === 'explicit_request' ? 'request' : d.intent === 'trigger_event' ? 'trigger' : 'problem'
+  const intent = intentKey(lead)
   return (
     // A div with button semantics: the item contains its own Restore button, and buttons can't nest.
     <div
@@ -88,24 +121,7 @@ export function LeadItem({
         <q>{quote?.excerpt ?? d.need_summary}</q>
       </span>
       <span className="item__foot">
-        <span className="item__byline">
-          <span className="item__avatar" aria-hidden="true">
-            {named ? named.replace(/^@/, '').charAt(0).toUpperCase() : '?'}
-          </span>
-          <span className="item__byline-text">
-            {named ? (
-              <>
-                From <b>{named}</b> on
-              </>
-            ) : (
-              'Posted on'
-            )}
-          </span>
-          <span className="item__host">
-            <SourceIcon host={host} />
-            {host}
-          </span>
-        </span>
+        <Byline lead={lead} />
         <span className="act">
           {lead.status === 'dismissed' ? (
             <button
@@ -197,8 +213,6 @@ export function replyUrl(lead: LeadView, message: string) {
 export function LeadDrawer({
   lead,
   open,
-  where,
-  now,
   timezone,
   hasPrev,
   hasNext,
@@ -209,8 +223,6 @@ export function LeadDrawer({
 }: {
   lead: LeadView | null
   open: boolean
-  where: string
-  now: string
   timezone: string
   hasPrev: boolean
   hasNext: boolean
@@ -308,7 +320,6 @@ export function LeadDrawer({
         <button ref={closeRef} type="button" className="close" onClick={onClose} aria-label="Close lead">
           ✕
         </button>
-        <span className="where">{where}</span>
         <span className="nav">
           <button type="button" onClick={onPrev} disabled={!hasPrev} aria-label="Previous lead">
             ↑
@@ -322,31 +333,25 @@ export function LeadDrawer({
       <div className="drawer__body" ref={bodyRef}>
         <p className="head-tags">
           <IntentTag lead={lead} />
-          <span>
-            on <External href={d.source_url}>{hostOf(d.source_url)}</External>
-          </span>
-          <span>
-            {d.date_status === 'unknown' ? 'Date not shown' : calendarDate(d.published_date)}, {foundLabel(lead.discoveredAt, now, timezone)}
-          </span>
+          <span>{d.date_status === 'unknown' ? 'Date not shown' : calendarDate(d.published_date)}</span>
         </p>
         <h2 id="drawer-title">{d.headline}</h2>
         <p className="who">
-          {author(lead)}
-          {identityBits.length > 0 && `, ${identityBits.join(', ')}`}
-          <Cites ids={d.identity_evidence_ids} evidence={d.evidence} />
+          <Byline
+            lead={lead}
+            linkSource
+            details={
+              <>
+                {identityBits.length > 0 && `, ${identityBits.join(', ')}`}
+                <Cites ids={d.identity_evidence_ids} evidence={d.evidence} />
+              </>
+            }
+          />
         </p>
         {note && <p className="state-note">{note}</p>}
 
         <div className={`evidence ${d.intent === 'explicit_request' ? 'is-request' : d.intent === 'trigger_event' ? 'is-trigger' : ''}`}>
           <blockquote>{quote ? `“${quote.excerpt}”` : d.need_summary}</blockquote>
-          <p className="evidence__meta">
-            <span>{quote ? 'Their own words' : 'Our paraphrase'}</span>
-            <span>
-              {d.date_status === 'unknown' ? 'Date not shown' : `Posted ${calendarDate(d.published_date)}`}
-              <Cites ids={d.date_evidence_ids} evidence={d.evidence} />
-            </span>
-            <External href={d.source_url}>Read the source</External>
-          </p>
         </div>
 
         {quote && (
@@ -555,41 +560,41 @@ export function LeadDrawer({
       <div className="drawer__foot">
         {lead.status === 'dismissed' ? (
           <>
-            <button type="button" className="btn btn--line" onClick={() => onAction('restore')}>
-              Restore to Today
-            </button>
             <button type="button" className="btn btn--quiet" onClick={() => onAction('source')}>
               Open source
+            </button>
+            <button type="button" className="btn btn--line spacer" onClick={() => onAction('restore')}>
+              Restore to Today
             </button>
           </>
         ) : lead.status === 'contacted' ? (
           <>
-            <button type="button" className="btn btn--line" onClick={() => onAction('copy', draft)}>
-              Copy message
+            <button type="button" className="btn btn--quiet" onClick={() => onAction('restore')}>
+              Move back to Today
             </button>
             <button type="button" className="btn btn--quiet" onClick={() => onAction('source')}>
               Open source
             </button>
-            <button type="button" className="btn btn--quiet spacer" onClick={() => onAction('restore')}>
-              Move back to Today
+            <button type="button" className="btn btn--line spacer" onClick={() => onAction('copy', draft)}>
+              Copy message
             </button>
           </>
         ) : (
           <>
-            <button type="button" className="btn btn--brand" onClick={() => onAction('reply', draft)} title={replyUrl(lead, draft)}>
-              Reply
-            </button>
-            <button type="button" className="btn btn--line" onClick={() => onAction('copy', draft)}>
-              Copy message
-            </button>
-            <button type="button" className="btn btn--quiet" onClick={() => onAction('source')}>
-              Open source
+            <button type="button" className="btn btn--quiet" onClick={() => onAction('dismiss')}>
+              Dismiss
             </button>
             <button type="button" className="btn btn--quiet" onClick={() => onAction('contact')}>
               Mark contacted
             </button>
-            <button type="button" className="btn btn--quiet spacer" onClick={() => onAction('dismiss')}>
-              Dismiss
+            <button type="button" className="btn btn--quiet" onClick={() => onAction('source')}>
+              Open source
+            </button>
+            <button type="button" className="btn btn--line spacer" onClick={() => onAction('copy', draft)}>
+              Copy message
+            </button>
+            <button type="button" className="btn btn--brand" onClick={() => onAction('reply', draft)} title={replyUrl(lead, draft)}>
+              Reply
             </button>
           </>
         )}

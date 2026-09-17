@@ -58,11 +58,6 @@ export function relativeMoment(value: string, now: string, timeZone: string) {
   return `${relativeDay(value, now, timeZone)} at ${clock(value, timeZone)}`
 }
 
-/** "found today, 10:59" or "found Sep 13" */
-export function foundLabel(value: string, now: string, timeZone: string) {
-  return dayDiff(value, now, timeZone) === 0 ? `found today, ${clock(value, timeZone)}` : `found ${shortDate(value, timeZone)}`
-}
-
 export function groupLabel(value: string, now: string, timeZone: string) {
   const days = dayDiff(value, now, timeZone)
   if (days === 0) return 'Found today'

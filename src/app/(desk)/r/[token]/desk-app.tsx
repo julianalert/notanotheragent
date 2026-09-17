@@ -413,7 +413,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     return [...map.entries()].map(([key, leads]) => ({ key, label: groupLabel(leads[0].discoveredAt, view.now, view.timezone), leads }))
   }, [deskView, rows, view.now, view.timezone])
 
-  const viewLabel = deskView === 'today' ? (openLead ? groupLabel(openLead.discoveredAt, view.now, view.timezone) : 'Today') : deskView === 'contacted' ? 'Contacted' : 'Dismissed'
 
   /* ----------------------------- Render ----------------------------- */
 
@@ -643,8 +642,6 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       <LeadDrawer
         lead={drawerOpen ? openLead : null}
         open={drawerOpen}
-        where={openIndex >= 0 ? `${viewLabel} — ${openIndex + 1} of ${rows.length}` : ''}
-        now={view.now}
         timezone={view.timezone}
         hasPrev={openIndex > 0}
         hasNext={openIndex >= 0 && openIndex < rows.length - 1}
