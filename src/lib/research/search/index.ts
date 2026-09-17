@@ -4,7 +4,7 @@ import type { SearchTopic } from '../prompt'
 import { exaConfigured, searchExa } from './exa'
 import { searchHackerNews } from './hn'
 import { searchOpenAI } from './openai-search'
-import { redditConfigured, searchReddit, subredditNew } from './reddit'
+import { latestPossibleRedditDates, redditConfigured, searchReddit, subredditNew } from './reddit'
 import type { Connector, ConnectorResult, SearchHit } from './types'
 
 export type { Connector, SearchHit } from './types'
@@ -20,6 +20,7 @@ export type DiscoverOptions = {
   /** Parallel topics. */
   concurrency?: number
   maxHits?: number
+  now?: Date
 }
 
 export type DiscoverResult = {
@@ -62,7 +63,8 @@ export function defaultConnectors(): Connector[] {
 
 /**
  * Fan every topic out to the connectors, then merge: dedupe by source key, drop hits known to be older than the
- * window (a day of tolerance for timezone rounding), drop excluded keys, keep topics evenly represented, cap.
+ * window (a day of tolerance for timezone rounding; Reddit threads also by their post id), drop excluded keys,
+ * keep topics evenly represented, cap.
  */
 export async function discover(topics: SearchTopic[], options: DiscoverOptions): Promise<DiscoverResult> {
   const connectors = options.connectors ?? defaultConnectors()
@@ -135,6 +137,8 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
   const seen = new Set<string>()
   const merged: SearchHit[] = []
   const lists = [...perTopic.values()]
+  // Reddit hits mostly come without a date; their ids still prove when a thread is older than the window.
+  const latestPossible = latestPossibleRedditDates(lists.flat().map((hit) => hit.url), options.now ?? new Date())
   const longest = Math.max(0, ...lists.map((list) => list.length))
   for (let i = 0; i < longest && merged.length < (options.maxHits ?? MAX_HITS); i++) {
     for (const list of lists) {
@@ -143,6 +147,7 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
       const key = sourceKey(hit.url)
       if (!key || seen.has(key) || options.excludeKeys?.has(key)) continue
       if (hit.publishedDate && Date.parse(`${hit.publishedDate}T00:00:00Z`) < floor) continue
+      if ((latestPossible.get(hit.url) ?? Infinity) < floor) continue
       seen.add(key)
       merged.push(hit)
       if (merged.length >= (options.maxHits ?? MAX_HITS)) break

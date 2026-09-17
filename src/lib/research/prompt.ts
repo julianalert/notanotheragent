@@ -62,20 +62,25 @@ export const WEBSITE_LANGUAGE =
   'the primary language of the content at website_url (write the profile, brief, fit explanations and coverage notes in it)'
 
 export const INITIAL_WINDOW_DAYS = 90
+/** Scheduled runs look this far back: the radar's memory (seen sources, judged candidates, leads) keeps out repeats. */
+export const DAILY_WINDOW_DAYS = 30
 export const DAILY_OVERLAP_HOURS = 72
 const DAY_MS = 86_400_000
 
 const isoDay = (date: Date) => date.toISOString().slice(0, 10)
 
 /**
- * Initial: 90-day window (public posts stay answerable for months). Daily: max(today − 90 days, date(last_successful_run_at − 72 h)).
- * Without a successful run, the initial window applies.
+ * Initial: 90-day window (public posts stay answerable for months). Daily: today − 30 days, because a post the radar
+ * has never reported is still a lead when it is a few weeks old; after a longer gap, date(last_successful_run_at −
+ * 72 h), never more than 90 days back. Without a successful run, the initial window applies.
  */
 export function publishedOnOrAfter(now: Date, lastSuccessfulRunAt: Date | null) {
   const floor = new Date(now.getTime() - INITIAL_WINDOW_DAYS * DAY_MS)
   if (!lastSuccessfulRunAt) return isoDay(floor)
+  const daily = new Date(now.getTime() - DAILY_WINDOW_DAYS * DAY_MS)
   const overlap = new Date(lastSuccessfulRunAt.getTime() - DAILY_OVERLAP_HOURS * 3_600_000)
-  return isoDay(overlap > floor ? overlap : floor)
+  const start = overlap < daily ? overlap : daily
+  return isoDay(start > floor ? start : floor)
 }
 
 /* ------------------------------ Shared rules ------------------------------ */
@@ -128,6 +133,7 @@ capabilities the website does not document.`
 const CANDIDATE_RULES = `For each candidate:
 - Record author identity only as shown (a public handle is enough; leave name, company, website, role, email
   and budget null when not shown). Never attach a company or real name without evidence of the relationship.
+  identity_evidence_ids must reference an evidence item from the source page that shows that handle or name.
 - buyer_match: why the author appears to be this business's buyer, per the brief.
 - need_summary plus a verbatim excerpt (at most 25 words per source in total) or a clearly labelled paraphrase.
 - Publication date: date_status "exact" when the page shows a date or timestamp (published_date YYYY-MM-DD);
@@ -229,8 +235,8 @@ opportunities inside the date window, prioritising the most recent. Search expli
 problems in parallel from the first searches. Return the candidate pool with decisions.`
 
 export const DAILY_RUN_INSTRUCTIONS = `Use the supplied profile. If it has no acquisition brief, build one from its facts and return the profile
-with the brief added; otherwise return it unchanged. Search for NEW opportunities published since the last
-successful run while respecting published_on_or_after. Rotate angles from the brief so repeated runs do not
+with the brief added; otherwise return it unchanged. Look for opportunities the radar has not reported yet,
+published on or after published_on_or_after (a post from a few weeks ago that was never reported still counts). Rotate angles from the brief so repeated runs do not
 repeat identical queries. Exclude all previous opportunities and cross-posts. Return the candidate pool with
 decisions. An honest empty pool is valid.`
 

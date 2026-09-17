@@ -18,7 +18,7 @@ import {
   type BusinessProfileT,
   type ResearchResultT,
 } from './contract'
-import { sourceKey } from './gates'
+import { confirmHandlesFromSources, sourceKey } from './gates'
 import { fetchPage, readWebsite } from './pages'
 import { BRIEF_PROMPT, deriveTopics, QUALIFY_PROMPT, TRIAGE_PROMPT, type ResearchInput, type SearchTopic } from './prompt'
 import {
@@ -583,6 +583,8 @@ async function stepQualifyPoll(state: PipelineState) {
     }
     const result: ResearchResultT = {
       ...parsed.data,
+      // The source texts are only available here: confirm the handles the model named without identity evidence.
+      candidates: confirmHandlesFromSources(parsed.data.candidates, state.sources),
       profile: state.profile,
       coverage: {
         ...parsed.data.coverage,

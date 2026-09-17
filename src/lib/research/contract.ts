@@ -9,7 +9,7 @@ export const RESEARCH_MODEL = 'gpt-5.5-2026-04-23'
 // v2.2: cost budget: medium reasoning, hard tool-call cap stated in the prompt, capped exclusion list.
 // v3: app-controlled discovery pipeline (search, triage, read, qualify as separate steps); trigger_event intent;
 // needs may match documented problems solved, not only service names.
-export const PROMPT_VERSION = 'research-v3'
+export const PROMPT_VERSION = 'research-v3.1'
 export const SCHEMA_NAME = 'lead_research_v3'
 export const SCHEMA_VERSION = '3'
 // Room for the acquisition brief and a pool of up to 15 candidates on top of high reasoning.

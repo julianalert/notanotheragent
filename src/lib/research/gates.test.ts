@@ -3,6 +3,7 @@ import { ResearchResult, type BusinessProfileT, type CandidateT } from './contra
 import {
   applyQuoteBudget,
   canonicalUrl,
+  confirmHandlesFromSources,
   DATE_FROM_SEARCH_CAVEAT,
   DATE_UNKNOWN_CAVEAT,
   FROM_LISTING_CAVEAT,
@@ -424,9 +425,10 @@ describe('helpers', () => {
     expect(SYSTEM_PROMPT).toMatch(/unsupported_business/)
   })
 
-  it('initial window is 90 days; daily is max(today − 90 days, last success − 72 h)', () => {
+  it('initial window is 90 days; daily is 30 days, or back to the last success − 72 h after a gap, at most 90 days', () => {
     expect(publishedOnOrAfter(NOW, null)).toBe('2026-06-17')
-    expect(publishedOnOrAfter(NOW, new Date('2026-09-14T08:00:00Z'))).toBe('2026-09-11')
+    expect(publishedOnOrAfter(NOW, new Date('2026-09-14T08:00:00Z'))).toBe('2026-08-16')
+    expect(publishedOnOrAfter(NOW, new Date('2026-08-01T08:00:00Z'))).toBe('2026-07-29')
     expect(publishedOnOrAfter(NOW, new Date('2026-05-01T08:00:00Z'))).toBe('2026-06-17')
   })
 
@@ -663,5 +665,49 @@ describe('memory and feedback', () => {
     expect(input.feedback.liked).toHaveLength(1)
     expect(input.run_instructions).toMatch(/founders/)
     for (const prompt of [SYSTEM_PROMPT, TRIAGE_PROMPT, QUALIFY_PROMPT]) expect(prompt).toMatch(/feedback\.liked/)
+  })
+})
+
+describe('handles confirmed from the text the application read', () => {
+  const thread = 'https://www.reddit.com/r/marketingagency/comments/1wbb6sk/agency_growth_is_stalled/'
+  const text = 'Agency growth is stalled\nposted by u/Stalled_Founder · 3 days ago\nWe have capacity but the pipeline went quiet.\nu/second-voice: cold email leads never converted for us'
+  const sources = [{ url: thread, title: 'Agency growth is stalled', text }]
+  // The shape seen in production: a handle, a need excerpt from the page, and no identity evidence reference.
+  const unreferenced = (overrides: Partial<CandidateT> = {}) => {
+    const base = makeCandidate({ source_url: thread, public_handle: 'u/Stalled_Founder', identity_evidence_ids: [], ...overrides })
+    return { ...base, evidence: base.evidence.map((item) => ({ ...item, title: 'Agency growth is stalled' })) }
+  }
+
+  it('without the check, a handle with no identity evidence stays unresolved', () => {
+    const outcome = decisionOf([unreferenced()])
+    expect(outcome.decision).toBe('unresolved')
+    expect(outcome.reasons).toContain('author handle not confirmed on the original page')
+  })
+
+  it('a handle shown in the source text gains identity evidence and the lead is published', () => {
+    const [confirmed] = confirmHandlesFromSources([unreferenced()], sources)
+    expect(confirmed.identity_evidence_ids).toHaveLength(1)
+    expect(confirmed.evidence.at(-1)).toMatchObject({ url: thread, inspected_original: true, excerpt: '' })
+    expect(decisionOf([confirmed]).decision).toBe('published')
+  })
+
+  it('a commenter is confirmed from the thread page, under the comment permalink', () => {
+    const permalink = `${thread}comment/nabc123/`
+    const [confirmed] = confirmHandlesFromSources([unreferenced({ source_url: permalink, public_handle: 'second-voice' })], sources)
+    expect(confirmed.evidence.at(-1)?.url).toBe(permalink)
+  })
+
+  it('a handle the page does not show, or another thread, is left unconfirmed', () => {
+    const absent = unreferenced({ public_handle: 'u/someone_else' })
+    expect(confirmHandlesFromSources([absent], sources)[0]).toBe(absent)
+    const partial = unreferenced({ public_handle: 'u/Founder' })
+    expect(confirmHandlesFromSources([partial], sources)[0]).toBe(partial)
+    const elsewhere = unreferenced({ source_url: 'https://www.reddit.com/r/agency/comments/1wcqqf3/other/' })
+    expect(confirmHandlesFromSources([elsewhere], sources)[0]).toBe(elsewhere)
+  })
+
+  it('identity evidence the model did cite is not replaced', () => {
+    const cited = makeCandidate({ source_url: thread, public_handle: 'u/Stalled_Founder' })
+    expect(confirmHandlesFromSources([cited], sources)[0]).toBe(cited)
   })
 })

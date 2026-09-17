@@ -352,6 +352,41 @@ export function listedOnOpenedPage(sourceUrl: string, auditUrls: string[]) {
 }
 
 /**
+ * The model often names the author's handle without citing identity evidence for it. The application read the
+ * source itself, so it checks: when the handle appears in the text of the source the candidate comes from (the
+ * post, or the thread a comment belongs to), an identity evidence item for that page is added. Candidates whose
+ * identity evidence already resolves, and handles the page does not show, are left as they are.
+ */
+export function confirmHandlesFromSources<T extends Pick<CandidateT, 'public_handle' | 'source_url' | 'identity_evidence_ids' | 'evidence'>>(
+  candidates: T[],
+  sources: Array<{ url: string; title: string; text: string }>,
+): T[] {
+  return candidates.map((candidate) => {
+    const handle = (candidate.public_handle ?? '').trim().replace(/^(@|\/?u\/)/i, '').toLowerCase()
+    if (!/^[a-z0-9_.-]{3,}$/.test(handle)) return candidate
+    // The whole handle: "stalled" is not shown by a page that shows "stalled_founder".
+    const shown = new RegExp(`(^|[^a-z0-9_-])${handle.replace(/[.-]/g, '\\$&')}($|[^a-z0-9_-])`)
+    const ids = new Set(candidate.evidence.map((item) => item.id))
+    if (candidate.identity_evidence_ids.some((id) => ids.has(id))) return candidate
+    const keys = new Set(auditKeysFor(candidate.source_url))
+    const source = sources.find((item) => auditKeysFor(item.url).some((key) => keys.has(key)) && shown.test(item.text.toLowerCase()))
+    if (!source) return candidate
+    let id = 'identity-source'
+    while (ids.has(id)) id += '-1'
+    const item: EvidenceT = {
+      id,
+      // A comment is evidenced under its own permalink (the thread page shows it); a post under the page read.
+      url: sameSource(source.url, candidate.source_url) ? source.url : candidate.source_url,
+      title: source.title,
+      inspected_original: true,
+      excerpt: '',
+      paraphrase: `The source page shows the author as ${candidate.public_handle!.trim()}.`,
+    }
+    return { ...candidate, evidence: [...candidate.evidence, item], identity_evidence_ids: [id] }
+  })
+}
+
+/**
  * Quote budget: at most 25 quoted words per original source. Need quotes are kept first; later quotes that would
  * exceed the budget lose their excerpt but keep their paraphrase and link. A single need quote longer than the
  * budget is cut at a word boundary with an ellipsis.

@@ -80,7 +80,7 @@ Two providers produce the same `lead_research_v3` result; the gates, scheduler, 
 - `website_unreadable` and `unsupported_business` show a URL-correction state.
 - Provider failures record an `error_code`. Transient errors, missing search activity, incomplete output and timeouts get one automatic retry. Configuration errors, refusals and uncertain creation don't.
 
-**Windows:** the initial run searches back 30 days. Daily runs use `max(today − 30 days, last successful run − 72 h)`.
+**Windows:** the initial run searches back 90 days. Daily runs search back 30 days (or to the last successful run − 72 h after a longer gap, at most 90 days); the radar's memory of seen sources, judged candidates and leads keeps out repeats.
 
 **Deadline:** no research call, retry or repair starts at or after `research_ends_at`. This is checked in the same `UPDATE` that marks a run running.
 

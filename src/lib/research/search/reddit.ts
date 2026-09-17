@@ -108,3 +108,42 @@ export async function subredditNew(subreddit: string, limit: number): Promise<Co
     return { connector: 'reddit', hits: [], costUsd: 0, error: (error as Error).message.slice(0, 120) }
   }
 }
+
+/* ------------------------------ Age from post ids ------------------------------ */
+
+/*
+ * Hosted search returns most Reddit posts without a date, and years-old threads then take the reading slots of
+ * fresh ones. Reddit post ids are sequential base-36 numbers, so an id gap bounds a post's age: the newest post
+ * known (the newest among this run's hits, or the anchor below) was created no later than now, and ids advance by
+ * at most MAX_IDS_PER_DAY. The result is the latest date a post can have; a post is only dropped when even that
+ * date is before the window, so a fresh post is never dropped by this estimate.
+ */
+
+/** Observed 1.3 to 1.8 million new ids per day in 2024-2026; doubled so growth keeps the bound safe. */
+const MAX_IDS_PER_DAY = 3_000_000
+/** A post seen on 2026-09-15 (r/DigitalMarketing): a floor for the newest known id. */
+const ANCHOR_POST_ID = '1wh3rwm'
+const ANCHOR_SEEN_AT = Date.parse('2026-09-15T00:00:00Z')
+
+export function redditPostNumber(url: string): number | null {
+  const id = url.match(/reddit\.com\/(?:r\/[^/]+\/)?comments\/([a-z0-9]{5,8})(?:[/?#.]|$)/i)?.[1]
+  if (!id) return null
+  const value = parseInt(id.toLowerCase(), 36)
+  return Number.isFinite(value) ? value : null
+}
+
+/** Latest possible publication time of each Reddit post among the URLs, keyed by URL; other URLs are absent. */
+export function latestPossibleRedditDates(urls: string[], now: Date): Map<string, number> {
+  const numbers = new Map<string, number>()
+  for (const url of urls) {
+    const value = redditPostNumber(url)
+    if (value !== null) numbers.set(url, value)
+  }
+  // An id that cannot exist yet (a malformed URL) must not make every real post look old.
+  const anchor = parseInt(ANCHOR_POST_ID, 36)
+  const highestPossible = anchor + (Math.max(0, now.getTime() - ANCHOR_SEEN_AT) / 86_400_000 + 1) * MAX_IDS_PER_DAY
+  const newest = Math.max(anchor, ...[...numbers.values()].filter((value) => value <= highestPossible))
+  const result = new Map<string, number>()
+  for (const [url, value] of numbers) result.set(url, now.getTime() - ((newest - value) / MAX_IDS_PER_DAY) * 86_400_000)
+  return result
+}

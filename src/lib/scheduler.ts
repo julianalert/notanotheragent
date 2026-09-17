@@ -34,6 +34,8 @@ import { sendPendingEmails } from './email/deliver'
 import { localDateKey, nextDailyRunAt } from './time'
 
 const MAX_PER_TICK = 20
+/** Searches proposed by the previous run that lead the next scheduled run (a third of a daily run's topics). */
+const CARRIED_QUERIES = 4
 
 function log(event: string, details: Record<string, unknown>) {
   // Structured, token-free logging. Never log radar tokens, private URLs or raw provider output.
@@ -266,6 +268,17 @@ async function startRun(run: RunRow) {
       untriedAngles: parent?.diagnostics?.follow_up?.untried_angles ?? [],
       windowStart: parent?.published_on_or_after ? new Date(parent.published_on_or_after).toISOString().slice(0, 10) : undefined,
     }
+  }
+
+  if (run.kind === 'daily' || run.kind === 'watch') {
+    // Every run ends with searches worth running next, in the words of the buyers it just read. With follow-ups
+    // off they would be lost and each day would repeat the brief's fixed topics: a few lead the next run.
+    const [last] = await query<{ diagnostics: RunDiagnostics | null }>(
+      `select diagnostics from research_runs
+       where radar_id = $1 and id <> $2 and status = 'completed' and diagnostics is not null order by created_at desc limit 1`,
+      [radar.id, run.id],
+    )
+    followUp.untriedAngles = (last?.diagnostics?.proposed_queries ?? []).slice(0, CARRIED_QUERIES)
   }
 
   const input = buildResearchInput({
