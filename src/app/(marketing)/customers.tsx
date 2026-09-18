@@ -58,11 +58,7 @@ export const JULIAN = {
 
 export function CustomerTestimonials() {
   return (
-    <TestimonialThreeColumnGrid
-      id="testimonials"
-      headline="What our customers are saying"
-      subheadline={<p>Agencies using Not Another Agent to start conversations with buyers who already need them.</p>}
-    >
+    <TestimonialThreeColumnGrid id="testimonials">
       <Testimonial {...CLEMENT} />
       <Testimonial {...CARINE} />
       <Testimonial {...JULIAN} />

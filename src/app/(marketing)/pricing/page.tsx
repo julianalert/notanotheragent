@@ -6,6 +6,7 @@ import { NavbarLink } from '@/components/sections/navbar-with-logo-actions-and-l
 import { TestimonialLargeQuote } from '@/components/sections/testimonial-with-large-quote'
 import type { Metadata } from 'next'
 import { SiteNavbar } from '../site-chrome'
+import { Analytics } from '../analytics'
 import { CLEMENT } from '../customers'
 import { SiteFaq } from '../site-faq'
 import { Pricing } from '../pricing'
@@ -68,6 +69,7 @@ export default function PricingPage() {
           cta={<WebsiteForm />}
         />
       </Main>
+      <Analytics />
     </>
   )
 }

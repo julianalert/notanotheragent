@@ -14,6 +14,7 @@ import { NavbarLink } from '@/components/sections/navbar-with-logo-actions-and-l
 import { RADAR_COOKIE } from '@/lib/http'
 import { findRadarByToken } from '@/lib/radars'
 import { cookies } from 'next/headers'
+import { Analytics } from './analytics'
 import { CustomerTestimonials } from './customers'
 import { EvidenceDemo, ExampleRadar, FitDemo, MessageDemo } from './home-demos'
 import { Pricing } from './pricing'
@@ -84,6 +85,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             </Screenshot>
           }
         />
+
+        <CustomerTestimonials />
 
         <FeaturesThreeColumn
           id="how-it-works"
@@ -185,8 +188,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           }
         />
 
-        <CustomerTestimonials />
-
         <Pricing />
 
         <SiteFaq />
@@ -198,6 +199,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           cta={<WebsiteForm />}
         />
       </Main>
+      <Analytics />
     </>
   )
 }
