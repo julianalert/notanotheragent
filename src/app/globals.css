@@ -30,3 +30,13 @@
     }
   }
 }
+
+/* Homepage hero lead strip: the track holds two copies of the cards, so -50% loops seamlessly. */
+@keyframes lead-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}

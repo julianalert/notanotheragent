@@ -23,9 +23,6 @@ export default function PricingPage() {
       <SiteNavbar
         links={
           <>
-            <NavbarLink href="/#how-it-works" className="whitespace-nowrap">
-              How it works
-            </NavbarLink>
             <NavbarLink href="/#every-lead" className="whitespace-nowrap">
               What you get
             </NavbarLink>

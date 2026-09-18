@@ -1,22 +1,19 @@
 import { AnnouncementBadge } from '@/components/elements/announcement-badge'
 import { ButtonLink } from '@/components/elements/button'
 import { Main } from '@/components/elements/main'
-import { Screenshot } from '@/components/elements/screenshot'
 import { Wallpaper } from '@/components/elements/wallpaper'
-import { CompassIcon } from '@/components/icons/compass-icon'
-import { InboxIcon } from '@/components/icons/inbox-icon'
-import { MagnifyingGlassIcon } from '@/components/icons/magnifying-glass-icon'
 import { CallToActionSimple } from '@/components/sections/call-to-action-simple'
-import { Feature, FeaturesThreeColumn } from '@/components/sections/features-three-column'
 import { Features, FeatureThreeColumnWithDemos } from '@/components/sections/features-three-column-with-demos'
 import { HeroLeftAlignedWithDemo } from '@/components/sections/hero-left-aligned-with-demo'
+import { Stat, StatsWithGraph } from '@/components/sections/stats-with-graph'
 import { NavbarLink } from '@/components/sections/navbar-with-logo-actions-and-left-aligned-links'
 import { RADAR_COOKIE } from '@/lib/http'
 import { findRadarByToken } from '@/lib/radars'
 import { cookies } from 'next/headers'
 import { Analytics } from './analytics'
 import { CustomerTestimonials } from './customers'
-import { EvidenceDemo, ExampleRadar, FitDemo, MessageDemo } from './home-demos'
+import { EvidenceDemo, FitDemo, MessageDemo } from './home-demos'
+import { LeadCarousel } from './lead-carousel'
 import { Pricing } from './pricing'
 import { SiteNavbar } from './site-chrome'
 import { SiteFaq } from './site-faq'
@@ -32,9 +29,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
       <SiteNavbar
         links={
           <>
-            <NavbarLink href="#how-it-works" className="whitespace-nowrap">
-              How it works
-            </NavbarLink>
             <NavbarLink href="#every-lead" className="whitespace-nowrap">
               What you get
             </NavbarLink>
@@ -62,6 +56,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
       <Main>
         <HeroLeftAlignedWithDemo
           id="start"
+          className="pb-12"
           eyebrow={
             existing ? (
               <AnnouncementBadge
@@ -79,61 +74,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             </p>
           }
           cta={<WebsiteForm defaultValue={typeof website === 'string' ? website.slice(0, 200) : ''} />}
-          demo={
-            <Screenshot wallpaper="blue" placement="bottom" className="rounded-lg">
-              <ExampleRadar />
-            </Screenshot>
-          }
         />
+
+        <LeadCarousel />
 
         <CustomerTestimonials />
-
-        <FeaturesThreeColumn
-          id="how-it-works"
-          eyebrow="How it works"
-          headline="From your website to your first leads, without a questionnaire."
-          subheadline={
-            <p>
-              Your website already says what you sell. We read it, search the public web for people asking for exactly
-              that, and email you what we find. Activate your agent and it keeps going every morning.
-            </p>
-          }
-          features={
-            <>
-              <Feature
-                icon={<CompassIcon />}
-                headline="We read your website"
-                subheadline={
-                  <p>
-                    Your services, customers and markets come straight from your pages. You can adjust the focus later,
-                    but you never have to fill in a form.
-                  </p>
-                }
-              />
-              <Feature
-                icon={<MagnifyingGlassIcon />}
-                headline="We search for real buying signals"
-                subheadline={
-                  <p>
-                    Public requests for a provider and first-person problems your service solves. We open every source
-                    and check its date before it reaches you.
-                  </p>
-                }
-              />
-              <Feature
-                icon={<InboxIcon />}
-                headline="New leads in your inbox every morning"
-                subheadline={
-                  <p>
-                    Your first search is free. Activate your agent and it searches again every morning, watches the
-                    communities where your buyers post through the day, and emails you the new matches. Some days
-                    there are none, and we don’t pad the list.
-                  </p>
-                }
-              />
-            </>
-          }
-        />
 
         <Features
           id="every-lead"
@@ -187,6 +132,21 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             </>
           }
         />
+
+        <StatsWithGraph
+          id="stats"
+          eyebrow="Cold outreach doesn’t mean mass outreach"
+          headline="Talk only to the people ready to sign."
+          subheadline={
+            <p>
+              We find the people already asking for what you sell and show you why each one fits. You do you: pick who’s
+              worth a message, edit our draft or write your own, and send it from your own inbox.
+            </p>
+          }
+        >
+          <Stat stat="$100k" text="Lead pipeline built in the first month." />
+          <Stat stat="x10" text="New conversations started every month." />
+        </StatsWithGraph>
 
         <Pricing />
 

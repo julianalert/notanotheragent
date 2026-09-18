@@ -33,7 +33,6 @@ export function SiteFooter() {
       id="footer"
       links={
         <>
-          <FooterLink href="/#how-it-works">How it works</FooterLink>
           <FooterLink href="/#every-lead">What every lead includes</FooterLink>
           <FooterLink href="/pricing">Pricing</FooterLink>
           <FooterLink href="/#faq">Questions</FooterLink>

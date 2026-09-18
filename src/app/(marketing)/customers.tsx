@@ -1,4 +1,5 @@
 import { Testimonial, TestimonialThreeColumnGrid } from '@/components/sections/testimonials-three-column-grid'
+import Link from 'next/link'
 import type { ReactNode } from 'react'
 
 function CompanyLink({ href, children }: { href: string; children: ReactNode }) {
@@ -21,7 +22,7 @@ export const CLEMENT = {
   name: 'Clément Bernard',
   byline: (
     <>
-      Founder at <CompanyLink href="https://visionbds.com">VisionBDS</CompanyLink>, AI Automation Agency
+      Founder at <CompanyLink href="https://visionbds.com">VisionBDS</CompanyLink>, Agency
     </>
   ),
 }
@@ -53,7 +54,14 @@ export const JULIAN = {
   // eslint-disable-next-line @next/next/no-img-element
   img: <img src="/clients/julian.jpg" alt="" width={160} height={160} />,
   name: 'Julian',
-  byline: 'Founder at Not Another Agent',
+  byline: (
+    <>
+      Founder at{' '}
+      <Link href="/" className="underline underline-offset-2">
+        Not Another Agent
+      </Link>
+    </>
+  ),
 }
 
 export function CustomerTestimonials() {
