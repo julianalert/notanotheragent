@@ -1,4 +1,5 @@
-import { FooterCategory, FooterLink, FooterWithLinkCategories } from '@/components/sections/footer-with-link-categories'
+import { XIcon } from '@/components/icons/social/x-icon'
+import { FooterLink, FooterWithLinksAndSocialIcons, SocialLink } from '@/components/sections/footer-with-links-and-social-icons'
 import { NavbarLogo, NavbarWithLogoActionsAndLeftAlignedLinks } from '@/components/sections/navbar-with-logo-actions-and-left-aligned-links'
 import type { ReactNode } from 'react'
 
@@ -28,27 +29,23 @@ export function SiteNavbar({ links, actions }: { links?: ReactNode; actions?: Re
 
 export function SiteFooter() {
   return (
-    <FooterWithLinkCategories
+    <FooterWithLinksAndSocialIcons
       id="footer"
       links={
         <>
-          <FooterCategory title="Not Another Agent">
-            <FooterLink href="/#how-it-works">How it works</FooterLink>
-            <FooterLink href="/#every-lead">What every lead includes</FooterLink>
-            <FooterLink href="/#faq">Questions</FooterLink>
-          </FooterCategory>
-          <FooterCategory title="Your research">
-            <FooterLink href="/#start">Start a search</FooterLink>
-            <li className="text-mist-700 dark:text-mist-400">First search free</li>
-            <li className="text-mist-700 dark:text-mist-400">New leads by email</li>
-          </FooterCategory>
-          <FooterCategory title="Privacy">
-            <li className="text-mist-700 dark:text-mist-400">Private link, no tracking</li>
-            <li className="text-mist-700 dark:text-mist-400">We never contact anyone for you</li>
-          </FooterCategory>
+          <FooterLink href="/#how-it-works">How it works</FooterLink>
+          <FooterLink href="/#every-lead">What every lead includes</FooterLink>
+          <FooterLink href="/pricing">Pricing</FooterLink>
+          <FooterLink href="/#faq">Questions</FooterLink>
+          <FooterLink href="/#start">Start a search</FooterLink>
         </>
       }
-      fineprint="Not Another Agent researches public sources. Every lead links to its original source so you can check it."
+      socialLinks={
+        <SocialLink href="https://x.com/notanothermrktr" name="X">
+          <XIcon />
+        </SocialLink>
+      }
+      fineprint={`© ${new Date().getFullYear()} Not Another Agent. Built with 🧡 from 🇫🇷`}
     />
   )
 }

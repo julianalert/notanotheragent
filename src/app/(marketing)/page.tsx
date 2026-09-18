@@ -1,14 +1,12 @@
 import { AnnouncementBadge } from '@/components/elements/announcement-badge'
-import { ButtonLink, PlainButtonLink } from '@/components/elements/button'
+import { ButtonLink } from '@/components/elements/button'
 import { Main } from '@/components/elements/main'
 import { Screenshot } from '@/components/elements/screenshot'
 import { Wallpaper } from '@/components/elements/wallpaper'
-import { ArrowNarrowRightIcon } from '@/components/icons/arrow-narrow-right-icon'
 import { CompassIcon } from '@/components/icons/compass-icon'
 import { InboxIcon } from '@/components/icons/inbox-icon'
 import { MagnifyingGlassIcon } from '@/components/icons/magnifying-glass-icon'
 import { CallToActionSimple } from '@/components/sections/call-to-action-simple'
-import { Faq, FAQsTwoColumnAccordion } from '@/components/sections/faqs-two-column-accordion'
 import { Feature, FeaturesThreeColumn } from '@/components/sections/features-three-column'
 import { Features, FeatureThreeColumnWithDemos } from '@/components/sections/features-three-column-with-demos'
 import { HeroLeftAlignedWithDemo } from '@/components/sections/hero-left-aligned-with-demo'
@@ -16,9 +14,11 @@ import { NavbarLink } from '@/components/sections/navbar-with-logo-actions-and-l
 import { RADAR_COOKIE } from '@/lib/http'
 import { findRadarByToken } from '@/lib/radars'
 import { cookies } from 'next/headers'
+import { CustomerTestimonials } from './customers'
 import { EvidenceDemo, ExampleRadar, FitDemo, MessageDemo } from './home-demos'
 import { Pricing } from './pricing'
 import { SiteNavbar } from './site-chrome'
+import { SiteFaq } from './site-faq'
 import { WebsiteForm } from './website-form'
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ website?: string }> }) {
@@ -39,6 +39,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
             </NavbarLink>
             <NavbarLink href="#faq" className="whitespace-nowrap">
               Questions
+            </NavbarLink>
+            <NavbarLink href="/pricing" className="whitespace-nowrap">
+              Pricing
             </NavbarLink>
           </>
         }
@@ -182,84 +185,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           }
         />
 
+        <CustomerTestimonials />
+
         <Pricing />
 
-        <FAQsTwoColumnAccordion
-          id="faq"
-          headline="Questions & answers"
-          subheadline={<p>How the free first search and the paid agent work.</p>}
-        >
-          <Faq
-            question="What does it cost?"
-            answer={
-              <p>
-                Your first search is free: you see every lead, source and message. Keeping the agent running is $99 a
-                month, billed by card through Stripe, and you can cancel any time from your private page.
-              </p>
-            }
-          />
-          <Faq
-            question="What does the agent do once it’s active?"
-            answer={
-              <p>
-                It searches again every morning at 8:00 in your timezone, polls the communities where it found your
-                buyers every few hours, emails you the moment a strong request appears, and learns from every lead you
-                mark contacted or dismissed.
-              </p>
-            }
-          />
-          <Faq
-            question="Do I need an account?"
-            answer={
-              <p>
-                No. Just your website and the email address where we should send your leads. Your results also live on
-                a private link that’s included in every email, so keep those emails private.
-              </p>
-            }
-          />
-          <Faq
-            question="How often will you email me?"
-            answer={
-              <p>
-                Once when your first results are ready. With the agent active: a morning digest on days with new
-                matches, and an instant note when someone posts a strong explicit request. Every email has a one-click
-                unsubscribe link.
-              </p>
-            }
-          />
-          <Faq
-            question="Where do the leads come from?"
-            answer={
-              <p>
-                Public discussions, original business posts and open briefs. We don’t use private communities, and we
-                don’t pad the list: if nothing fits on a given day, you’ll see that.
-              </p>
-            }
-          />
-          <Faq
-            question="Do you contact anyone on my behalf?"
-            answer={<p>Never. We draft a first message; you decide whether and how to send it.</p>}
-          />
-          <Faq
-            question="What happens if I cancel?"
-            answer={<p>Searching stops at the end of the paid month. Your leads, sources and messages stay available on the same private link.</p>}
-          />
-        </FAQsTwoColumnAccordion>
+        <SiteFaq />
 
         <CallToActionSimple
-          eyebrow="First search free · No account"
+          eyebrow="First search free · No account · No card"
           headline="See who is asking for what you sell this week."
           subheadline={<p>Enter your website and your email. Your first leads usually arrive within minutes.</p>}
-          cta={
-            <div className="flex items-center gap-4">
-              <ButtonLink href="#start" size="lg" color="accent">
-                Get my first leads
-              </ButtonLink>
-              <PlainButtonLink href="#how-it-works" size="lg">
-                How it works <ArrowNarrowRightIcon />
-              </PlainButtonLink>
-            </div>
-          }
+          cta={<WebsiteForm />}
         />
       </Main>
     </>
