@@ -1,6 +1,6 @@
 import 'server-only'
 import Stripe from 'stripe'
-import { appUrl } from '../email/deliver'
+import { appUrl } from '../site'
 import type { BillingEvent } from './subscription'
 
 /*

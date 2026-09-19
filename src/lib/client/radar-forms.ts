@@ -1,5 +1,7 @@
 /** Browser-side calls shared by the marketing forms and the desk. */
 
+import { storedAttribution } from './attribution'
+
 export type CheckWebsiteResult = { ok: true; host: string; existingToken: string | null } | { ok: false; error: string }
 
 /** Home step 1: validates the website without starting research. */
@@ -32,6 +34,7 @@ export async function createRadar(website: string, email?: string): Promise<Crea
         website,
         email,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        attribution: storedAttribution(),
       }),
     })
     const body = await response.json().catch(() => ({}))

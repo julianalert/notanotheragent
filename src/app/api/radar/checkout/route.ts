@@ -1,5 +1,6 @@
 import { billingConfigured, createCheckoutSession } from '@/lib/billing/stripe'
 import { config } from '@/lib/config'
+import { recordEvent } from '@/lib/events'
 import { clientKey, json, notFound, radarFromRequest, rateLimit, TOKEN_HEADER, withErrors } from '@/lib/http'
 
 /** Start Stripe Checkout for this radar's $99/month agent. Returns the hosted checkout URL. */
@@ -19,5 +20,8 @@ export const POST = withErrors(async function postHandler(request: Request) {
     customerId: radar.stripe_customer_id,
   })
   if (!url) return json({ error: 'Checkout could not be started. Please try again.' }, { status: 502 })
+  const body = await request.json().catch(() => null)
+  const placement = ['rail', 'empty', 'promo'].includes(body?.placement) ? body.placement : 'unknown'
+  await recordEvent(radar.id, 'checkout_started', { placement, plan: radar.plan })
   return json({ url })
 })

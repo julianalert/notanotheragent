@@ -11,6 +11,7 @@
     "test": "vitest run",
     "research:eval": "tsx --env-file-if-exists=.env.local scripts/research-eval.ts",
     "diagnose": "tsx --env-file-if-exists=.env.local scripts/diagnose.ts",
+    "funnel": "tsx --env-file-if-exists=.env.local scripts/funnel.ts",
     "email:test": "tsx --env-file-if-exists=.env.local scripts/send-test-emails.ts"
   },
   "prettier": {

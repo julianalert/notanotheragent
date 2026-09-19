@@ -9,6 +9,7 @@ import { Stat, StatsWithGraph } from '@/components/sections/stats-with-graph'
 import { NavbarLink } from '@/components/sections/navbar-with-logo-actions-and-left-aligned-links'
 import { RADAR_COOKIE } from '@/lib/http'
 import { findRadarByToken } from '@/lib/radars'
+import type { Metadata } from 'next'
 import { cookies } from 'next/headers'
 import { Analytics } from './analytics'
 import { CustomerTestimonials } from './customers'
@@ -18,6 +19,9 @@ import { Pricing } from './pricing'
 import { SiteNavbar } from './site-chrome'
 import { SiteFaq } from './site-faq'
 import { WebsiteForm } from './website-form'
+
+// `?website=` prefills the form: every variant is the same page.
+export const metadata: Metadata = { alternates: { canonical: '/' } }
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ website?: string }> }) {
   const [{ website }, cookieStore] = await Promise.all([searchParams, cookies()])

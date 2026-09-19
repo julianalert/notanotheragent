@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/elements/button'
 import { createRadar } from '@/lib/client/radar-forms'
+import { track } from '@/lib/client/track'
 import { clsx } from 'clsx/lite'
 import { useId, useState, type FormEvent } from 'react'
 
@@ -35,6 +36,8 @@ export function EmailForm({
       setPending(false)
       return
     }
+    // The radar exists now: this is the signup. Sent before the redirect, which would drop it.
+    await track('email_submitted')
     onCreated(result.token)
   }
 

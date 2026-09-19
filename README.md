@@ -39,6 +39,13 @@ After the website step, visitors give the email address where leads should go. R
 - **Lifecycle:** `invoice.paid` extends the deadline; `invoice.payment_failed` sets `past_due` (runs continue until the grace window ends); `customer.subscription.deleted` sets `cancelled` and clears `next_run_at`. `research_ends_at` therefore still means "no research after this", so every deadline check is unchanged.
 - **Setup:** `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`; run `supabase/migrations/008_billing_watch.sql`. Locally: `stripe listen --forward-to localhost:3000/api/stripe/webhook`.
 
+## Growth tracking
+
+- **Marketing pages:** Simple Analytics pageviews plus the events `website_submitted`, `email_submitted` (the signup) and `existing_radar_opened` (`src/lib/client/track.ts`). The same pages store the visitor's first touch (UTM tags, referring host, landing path) in localStorage for 30 days; radar creation saves it in `radars.source_*` (`src/lib/attribution.ts`). Private pages are never reported to Simple Analytics.
+- **Product events:** the `events` table holds desk actions sent by the browser to `POST /api/radar/events` (`desk_viewed`, `lead_opened`, `draft_copied`, `reply_clicked`, `draft_rewritten`, `source_opened`, `private_link_copied`, `focus_saved`, `webhook_saved`), plus `checkout_started` (with the button's placement), `plan_changed` (Stripe webhook) and `email_opened`, `email_clicked`, `email_bounced`, `email_complained` (`POST /api/resend/webhook`, signed with `RESEND_WEBHOOK_SECRET`). Props are short labels only: never tokens, emails, URLs or message text.
+- **Funnel:** `npm run funnel` prints weekly signup cohorts through every stage, from created to paying 30 days after activation, with step conversion, time to first lead and research cost per activation. `-- --by source` groups by first touch, `-- --weeks 12` widens the window, `-- --local` reads the embedded database (stop the dev server first).
+- **Setup:** run `supabase/migrations/009_growth_tracking.sql`. In Resend, add a webhook to `<APP_URL>/api/resend/webhook` for `email.opened`, `email.clicked`, `email.bounced` and `email.complained`, set `RESEND_WEBHOOK_SECRET`, and turn on open and click tracking for the sending domain.
+
 ## Watching and learning
 
 - **One complete run per day.** An active radar runs at 8:00 local: 12 buyer situations across every connector, plus a poll of its `watched_sources` (the communities where earlier runs found candidates, toggleable on the page), then one digest email. `WATCH_INTERVAL_HOURS` (off by default) adds extra polls between morning runs (`kind = 'watch'`, smaller budgets, instant email only for an explicit request scoring at least `INSTANT_ALERT_MIN_SCORE`); they pause at `MONTHLY_RADAR_BUDGET_USD`.

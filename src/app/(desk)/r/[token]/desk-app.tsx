@@ -6,6 +6,7 @@ import { LinkIcon } from '@/components/icons/link-icon'
 import { UserCircleIcon } from '@/components/icons/user-circle-icon'
 import Link from 'next/link'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { trackDesk } from '@/lib/client/track'
 import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
 import { copyText, countWord, groupLabel, localDateKey, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
@@ -173,6 +174,17 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   const openIndex = openLead ? rows.findIndex((lead) => lead.id === openLead.id) : -1
   const drawerOpen = screen === 'leads' && openIndex >= 0
 
+  // Product events: one view per visit (the server de-duplicates within half an hour) and each lead opened.
+  useEffect(() => {
+    trackDesk(token, 'desk_viewed', { screen, via: window.location.hash.startsWith('#lead-') ? 'email_lead' : 'link' })
+  }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+  const trackedLeadId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!openLead || trackedLeadId.current === openLead.id) return
+    trackedLeadId.current = openLead.id
+    trackDesk(token, 'lead_opened', { status: openLead.status })
+  }, [openLead, token])
+
   // Deep link from emails: /r/<token>#lead-<id> opens that lead.
   const deepLinked = useRef(false)
   useEffect(() => {
@@ -270,7 +282,10 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       if (!openLead) return
       const message = draft ?? openLead.data.outreach_message
       if (action === 'copy') {
-        if (await copyText(message)) showToast('Message copied')
+        if (await copyText(message)) {
+          showToast('Message copied')
+          trackDesk(token, 'draft_copied')
+        }
         return
       }
       if (action === 'reply') {
@@ -279,6 +294,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
         const prefilled = /reddit\.com\/message\/compose|^mailto:/i.test(url)
         if (!prefilled) await copyText(message)
         window.open(url, '_blank', 'noopener,noreferrer')
+        trackDesk(token, 'reply_clicked', { channel: /^mailto:/i.test(url) ? 'email' : /reddit\.com/i.test(url) ? 'reddit' : 'other' })
         if (openLead.status === 'new') setStatus(openLead, 'contacted', prefilled ? 'Marked contacted' : 'Message copied, marked contacted')
         return
       }
@@ -289,6 +305,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           showToast(body.error ?? 'We couldn’t rewrite the message. Try again.')
           return
         }
+        trackDesk(token, 'draft_rewritten', { style })
         setView((current) => ({
           ...current,
           leads: current.leads.map((lead) =>
@@ -301,13 +318,14 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       }
       if (action === 'source') {
         window.open(openLead.data.source_url, '_blank', 'noopener,noreferrer')
+        trackDesk(token, 'source_opened')
         return
       }
       if (action === 'contact') return setStatus(openLead, 'contacted', 'Marked contacted')
       if (action === 'dismiss') return setStatus(openLead, 'dismissed', 'Lead dismissed')
       if (action === 'restore') return setStatus(openLead, 'new', 'Moved back to Today')
     },
-    [openLead, setStatus, showToast, api],
+    [openLead, setStatus, showToast, api, token],
   )
 
   const step = useCallback(
@@ -336,6 +354,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     const response = await api('/focus', { method: 'PATCH', body: JSON.stringify(focus ?? { reset: true }) }).catch(() => null)
     if (!response) return 'We couldn’t save your focus. Check your connection.'
     if (!response.ok) return (await response.json().catch(() => ({}))).error ?? 'We couldn’t save your focus.'
+    trackDesk(token, 'focus_saved', { action: focus ? 'edit' : 'reset' })
     await refresh()
     return null
   }
@@ -346,9 +365,9 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   }
 
   /** Stripe Checkout (activation) and the Customer Portal (billing) are hosted pages: the browser goes there. */
-  async function billing(path: '/checkout' | '/billing-portal') {
+  async function billing(path: '/checkout' | '/billing-portal', placement?: 'rail' | 'empty' | 'promo') {
     setActivating(true)
-    const response = await api(path, { method: 'POST' }).catch(() => null)
+    const response = await api(path, { method: 'POST', body: JSON.stringify({ placement }) }).catch(() => null)
     const body = (await response?.json().catch(() => ({}))) ?? {}
     if (response?.ok && typeof body.url === 'string') {
       window.location.assign(body.url)
@@ -362,6 +381,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     const response = await api('/webhook', { method: 'PATCH', body: JSON.stringify({ url }) }).catch(() => null)
     if (!response) return 'Check your connection and try again.'
     if (!response.ok) return ((await response.json().catch(() => ({}))).error as string | undefined) ?? 'We couldn’t save that.'
+    trackDesk(token, 'webhook_saved', { action: url ? 'set' : 'removed' })
     await refresh()
     showToast(url ? 'New leads will also be posted there' : 'Webhook removed')
     return null
@@ -369,6 +389,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
   async function copyPrivateLink() {
     if (!(await copyText(privateUrl))) return
+    trackDesk(token, 'private_link_copied')
     showToast('Link copied. Save it somewhere safe to come back anytime.')
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
@@ -462,7 +483,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           foundToday={foundTodayCount}
           viewsEnabled={screen === 'leads'}
           activating={activating}
-          onActivate={() => billing('/checkout')}
+          onActivate={() => billing('/checkout', 'rail')}
           onPortal={() => billing('/billing-portal')}
           onWebhook={saveWebhook}
           onCopyLink={copyPrivateLink}
@@ -549,7 +570,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
           {screen === 'unreadable' && <DeadEnd view={view} kind="unreadable" />}
           {screen === 'unsupported' && <DeadEnd view={view} kind="unsupported" />}
-          {screen === 'empty' && <NoResults view={view} onActivate={() => billing('/checkout')} activating={activating} />}
+          {screen === 'empty' && <NoResults view={view} onActivate={() => billing('/checkout', 'empty')} activating={activating} />}
 
           {screen === 'leads' && (
             <>
@@ -632,7 +653,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                                   ${view.priceUsd}
                                   <small>/ month</small>
                                 </p>
-                                <button type="button" className="btn btn--brand" onClick={() => billing('/checkout')} disabled={activating}>
+                                <button type="button" className="btn btn--brand" onClick={() => billing('/checkout', 'promo')} disabled={activating}>
                                   {activating ? 'Opening checkout…' : view.plan === 'free' ? 'Activate my agent' : 'Reactivate my agent'}
                                 </button>
                                 <p className="promo__fine">Cancel any time</p>

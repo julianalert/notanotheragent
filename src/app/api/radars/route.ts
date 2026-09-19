@@ -1,3 +1,4 @@
+import { parseAttribution } from '@/lib/attribution'
 import { config } from '@/lib/config'
 import { normaliseEmail } from '@/lib/crypto'
 import { clientKey, json, RADAR_COOKIE, rateLimit, withErrors } from '@/lib/http'
@@ -48,7 +49,15 @@ export const POST = withErrors(async function postHandler(request: Request) {
 
   const timezone = isValidTimeZone(body?.timezone) ? body.timezone : null
   const token = createToken()
-  await createRadar({ tokenHash: hashToken(token), website: website.url, host: website.host, timezone, email, token })
+  await createRadar({
+    tokenHash: hashToken(token),
+    website: website.url,
+    host: website.host,
+    timezone,
+    email,
+    token,
+    attribution: parseAttribution(body?.attribution),
+  })
 
   cookieStore.set(RADAR_COOKIE, token, {
     httpOnly: true,

@@ -1,4 +1,5 @@
 import 'server-only'
+import type { Attribution } from './attribution'
 import { config } from './config'
 import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
@@ -178,16 +179,21 @@ export async function createRadar(input: {
   /** Carried over from this browser's previous radar so the visitor isn't asked twice. */
   email?: string | null
   token?: string
+  /** First touch that brought the visitor (UTM, referring host, landing page). */
+  attribution?: Attribution | null
 }) {
   const now = new Date()
+  const source = input.attribution ?? null
   // Immutable: research_ends_at = created_at + 14 × 24 hours.
   const endsAt = new Date(now.getTime() + config.researchPeriodMs)
   const timezone = input.timezone && isValidTimeZone(input.timezone) ? input.timezone : 'UTC'
   const rows = await query<{ radar_id: string }>(
     `with r as (
        insert into radars (token_hash, website, website_host, timezone, timezone_inferred,
-         created_at, research_started_at, research_ends_at, email, email_added_at, token_ciphertext)
-       values ($1, $2, $3, $4, true, $5, $5, $6, $7, $8, $9)
+         created_at, research_started_at, research_ends_at, email, email_added_at, token_ciphertext,
+         source_utm_source, source_utm_medium, source_utm_campaign, source_utm_term, source_utm_content,
+         source_referrer, source_landing_path)
+       values ($1, $2, $3, $4, true, $5, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        returning id
      )
      insert into research_runs (radar_id, kind, run_key, status, scheduled_at)
@@ -203,6 +209,13 @@ export async function createRadar(input: {
       input.email ?? null,
       input.email ? now : null,
       input.email && input.token ? safeEncrypt(input.token) : null,
+      source?.utm_source ?? null,
+      source?.utm_medium ?? null,
+      source?.utm_campaign ?? null,
+      source?.utm_term ?? null,
+      source?.utm_content ?? null,
+      source?.referrer ?? null,
+      source?.landing_path ?? null,
     ],
   )
   return rows[0].radar_id

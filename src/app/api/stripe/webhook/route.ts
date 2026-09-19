@@ -2,6 +2,7 @@ import { billingConfigured, billingEventFrom, constructEvent } from '@/lib/billi
 import { applyPlanPatch, findRadarForBilling } from '@/lib/billing/radar-plan'
 import { applyBillingEvent } from '@/lib/billing/subscription'
 import { query } from '@/lib/db'
+import { recordEvent } from '@/lib/events'
 import { json } from '@/lib/http'
 import { tick } from '@/lib/scheduler'
 import { after } from 'next/server'
@@ -43,6 +44,9 @@ export async function POST(request: Request) {
     }
     const patch = applyBillingEvent(radar, translated.billing, new Date())
     await applyPlanPatch(radar.id, patch)
+    if (patch.plan && patch.plan !== radar.plan) {
+      await recordEvent(radar.id, 'plan_changed', { from: radar.plan, to: patch.plan }, `stripe:${event.id}`)
+    }
     log('billing.applied', { type: event.type, plan: patch.plan ?? radar.plan })
     if (patch.next_run_at) after(() => tick().catch((error) => console.error('tick failed', (error as Error).message)))
     return json({ received: true })

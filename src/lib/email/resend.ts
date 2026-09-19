@@ -8,6 +8,8 @@ export type OutgoingEmail = {
   /** Resend de-duplicates repeated sends with the same key (24 h), so a retried tick never double-sends. */
   idempotencyKey: string
   unsubscribeUrl: string
+  /** Returned by Resend's webhook with each open or click (letters, digits, `_` and `-` only). */
+  tags?: Record<string, string>
 }
 
 export type SendResult = { ok: true; id: string | null; preview?: string } | { ok: false; retryable: boolean; error: string }
@@ -59,6 +61,7 @@ export async function sendEmail(email: OutgoingEmail): Promise<SendResult> {
         subject: email.subject,
         html: email.html,
         text: email.text,
+        tags: Object.entries(email.tags ?? {}).map(([name, value]) => ({ name, value })),
         headers: {
           'List-Unsubscribe': `<${email.unsubscribeUrl}>`,
           'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',

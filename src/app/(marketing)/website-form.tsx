@@ -5,6 +5,7 @@ import { clsx } from 'clsx/lite'
 import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
 import { checkWebsite } from '@/lib/client/radar-forms'
+import { track } from '@/lib/client/track'
 import { EmailForm } from './email-form'
 
 export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
@@ -32,9 +33,11 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
       return
     }
     if (result.existingToken) {
+      await track('existing_radar_opened')
       router.push(`/r/${result.existingToken}`)
       return
     }
+    void track('website_submitted')
     setStarted({ website: value, host: result.host })
     setPending(false)
   }

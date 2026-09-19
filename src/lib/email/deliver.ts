@@ -1,19 +1,13 @@
 import 'server-only'
 import { decryptToken, unsubscribeCode } from '../crypto'
 import { query } from '../db'
+import { appUrl } from '../site'
 import type { LeadT, RunOutcome } from '../research/contract'
 import { emailConfigured, sendEmail } from './resend'
 import { renderRunEmail } from './templates'
 
 const MAX_ATTEMPTS = 3
 const MAX_PER_TICK = 20
-
-export function appUrl() {
-  const explicit = process.env.APP_URL?.replace(/\/+$/, '')
-  if (explicit) return explicit
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-  return `http://localhost:${process.env.PORT ?? 3000}`
-}
 
 function log(event: string, details: Record<string, unknown>) {
   // Never log email addresses, tokens or private URLs.
@@ -118,6 +112,7 @@ async function deliver(run: ClaimedRun) {
     text: email.text,
     idempotencyKey: `run-${run.id}`,
     unsubscribeUrl,
+    tags: { radar_id: run.radar_id, kind: emailKind, plan: run.plan },
   })
 
   if (result.ok) {

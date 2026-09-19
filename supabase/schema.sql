@@ -203,6 +203,28 @@ create table if not exists public.evaluation_reviews (
   created_at timestamptz not null default now()
 );
 
+-- First touch that led to the radar: UTM parameters, the referring host (never the full URL) and the landing path.
+alter table public.radars add column if not exists source_utm_source text;
+alter table public.radars add column if not exists source_utm_medium text;
+alter table public.radars add column if not exists source_utm_campaign text;
+alter table public.radars add column if not exists source_utm_term text;
+alter table public.radars add column if not exists source_utm_content text;
+alter table public.radars add column if not exists source_referrer text;
+alter table public.radars add column if not exists source_landing_path text;
+
+-- Product events: desk actions, checkout, plan changes, email opens and clicks. Never holds tokens, emails or URLs.
+create table if not exists public.events (
+  id uuid primary key default gen_random_uuid(),
+  radar_id uuid references public.radars(id) on delete cascade,
+  name text not null,
+  props jsonb not null default '{}',
+  -- Webhook deliveries are retried: the provider's message id makes a redelivery a no-op.
+  dedupe_key text unique,
+  created_at timestamptz not null default now()
+);
+create index if not exists events_radar_idx on public.events (radar_id, name, created_at desc);
+create index if not exists events_name_idx on public.events (name, created_at desc);
+
 -- Security: the app connects server-side with the database connection string and scopes every query by the
 -- radar's secret token. Nothing should be reachable through Supabase's public Data API (anon/authenticated keys).
 -- RLS enabled with no policies = deny all for those roles. The postgres role used by the app bypasses RLS.
@@ -216,8 +238,9 @@ alter table public.seen_sources enable row level security;
 alter table public.search_stats enable row level security;
 alter table public.stripe_events enable row level security;
 alter table public.watched_sources enable row level security;
+alter table public.events enable row level security;
 
-revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources from anon, authenticated;
+revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources, public.events from anon, authenticated;
 
 -- Useful pilot queries (spec §2.3):
 --   Cost and time per run:

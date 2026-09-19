@@ -15,6 +15,14 @@ import { WebsiteForm } from '../website-form'
 export const metadata: Metadata = {
   title: 'Pricing — Not Another Agent',
   description: 'Your first search is free. Keep your agent finding new leads every morning for $99 a month.',
+  alternates: { canonical: '/pricing' },
+  openGraph: {
+    type: 'website',
+    siteName: 'Not Another Agent',
+    url: '/pricing',
+    title: 'Pricing — Not Another Agent',
+    description: 'Your first search is free. Keep your agent finding new leads every morning for $99 a month.',
+  },
 }
 
 export default function PricingPage() {

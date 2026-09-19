@@ -223,6 +223,28 @@ create table if not exists watched_sources (
   unique (radar_id, kind, key)
 );
 
+-- First touch that led to the radar: UTM parameters, the referring host (never the full URL) and the landing path.
+alter table radars add column if not exists source_utm_source text;
+alter table radars add column if not exists source_utm_medium text;
+alter table radars add column if not exists source_utm_campaign text;
+alter table radars add column if not exists source_utm_term text;
+alter table radars add column if not exists source_utm_content text;
+alter table radars add column if not exists source_referrer text;
+alter table radars add column if not exists source_landing_path text;
+
+-- Product events: desk actions, checkout, plan changes, email opens and clicks. Never holds tokens, emails or URLs.
+create table if not exists events (
+  id uuid primary key default gen_random_uuid(),
+  radar_id uuid references radars(id) on delete cascade,
+  name text not null,
+  props jsonb not null default '{}',
+  -- Webhook deliveries are retried: the provider's message id makes a redelivery a no-op.
+  dedupe_key text unique,
+  created_at timestamptz not null default now()
+);
+create index if not exists events_radar_idx on events (radar_id, name, created_at desc);
+create index if not exists events_name_idx on events (name, created_at desc);
+
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (
   id uuid primary key default gen_random_uuid(),
