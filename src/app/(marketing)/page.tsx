@@ -69,8 +69,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
           headline="Wake up to companies that need exactly what your agency sells"
           subheadline={
             <p>
-              We scan the web for companies publicly signaling they need your services and send the best matches to
-              your inbox every morning.
+              Enter your site. We search public posts where people ask for exactly what you do, and email you the
+              matches with a link to every source.
             </p>
           }
           cta={<WebsiteForm defaultValue={typeof website === 'string' ? website.slice(0, 200) : ''} />}
@@ -82,9 +82,14 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
 
         <Features
           id="every-lead"
-          eyebrow="What every lead includes"
-          headline="Everything you need to reach out, on one card."
-          subheadline={<p>No blurred names, no locked messages. Every claim links back to where we found it.</p>}
+          eyebrow="Inside every lead"
+          headline="Everything you need to close new clients every day."
+          subheadline={
+            <p>
+              No blurred names, no locked messages. Every claim links back to where we found it. All that’s left is to
+              start the conversation and make them an offer they can’t refuse.
+            </p>
+          }
           features={
             <>
               <FeatureThreeColumnWithDemos
@@ -135,12 +140,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
 
         <StatsWithGraph
           id="stats"
-          eyebrow="Cold outreach doesn’t mean mass outreach"
+          eyebrow="Warm leads, not generic contacts"
           headline="Talk only to the people ready to sign."
           subheadline={
             <p>
               We find the people already asking for what you sell and show you why each one fits. You do you: pick who’s
-              worth a message, edit our draft or write your own, and send it from your own inbox.
+              worth a message, make them an offer they can’t refuse, and reach them where they posted.
             </p>
           }
         >
