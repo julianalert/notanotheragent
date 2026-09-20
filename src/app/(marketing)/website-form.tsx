@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useId, useState, type FormEvent } from 'react'
 import { checkWebsite } from '@/lib/client/radar-forms'
 import { track } from '@/lib/client/track'
+import { TRIAL_DAYS } from '@/lib/trial'
 import { EmailForm } from './email-form'
 
 export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
@@ -100,7 +101,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
         </p>
       )}
       <p id={`${id}-hint`} className="px-4 text-xs/5 text-mist-600 italic dark:text-mist-400">
-        🔥 Your first search is free. No account needed.
+        🔥 Free for {TRIAL_DAYS} days. No card, no account.
       </p>
     </form>
   )

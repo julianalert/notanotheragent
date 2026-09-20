@@ -1,3 +1,4 @@
+import { TRIAL_DAYS } from '@/lib/trial'
 import { logoDataUrl } from '@/lib/og/logo'
 import { ImageResponse } from 'next/og'
 
@@ -50,7 +51,7 @@ export default async function OpenGraphImage() {
           >
             Get my first leads
           </div>
-          <span style={{ fontSize: 24, color: '#4a5359' }}>First search free · No account · No card</span>
+          <span style={{ fontSize: 24, color: '#4a5359' }}>Free for {TRIAL_DAYS} days · No account · No card</span>
         </div>
       </div>
     ),

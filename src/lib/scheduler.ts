@@ -1,5 +1,5 @@
 import 'server-only'
-import { agentLive } from './billing/subscription'
+import { agentLive, trialEndsAt } from './billing/subscription'
 import { config } from './config'
 import { query, transaction, type Queryable } from './db'
 import type { RadarRow, RunRow } from './radars'
@@ -18,7 +18,7 @@ import {
 } from './research/contract'
 import { followUpDecision, isResearchOpen, MAX_PUBLISHED_PER_RUN, qualifyCandidates, sourceKey, validateProfile, type QualifiedLead } from './research/gates'
 import { enrichLead } from './research/enrich'
-import type { PipelineSummary } from './research/pipeline'
+import { probeMatches, type PipelineSummary } from './research/pipeline'
 import { postWebhook } from './email/webhook'
 import { buildResearchInput, lintQuery, type ExcludedOpportunity, type Feedback, type PreviousCandidate } from './research/prompt'
 import {
@@ -33,6 +33,7 @@ import {
   type Usage,
 } from './research/provider'
 import { sendPendingEmails } from './email/deliver'
+import { sendLifecycleEmails } from './email/lifecycle'
 import { toJsonb } from './jsonb'
 import { localDateKey, nextDailyRunAt } from './time'
 
@@ -51,6 +52,7 @@ function log(event: string, details: Record<string, unknown>) {
  */
 export async function tick() {
   await expireResearch()
+  await scheduleTrialRuns()
   await enqueueDueDailyRuns()
   await enqueueDueWatchRuns()
 
@@ -68,6 +70,7 @@ export async function tick() {
   await enrichLeads(null).catch((error) => log('runs.enrich_sweep_error', { error: (error as Error).message.slice(0, 200) }))
   // Email failures must never block research.
   await sendPendingEmails().catch((error) => log('email.tick_error', { error: (error as Error).message.slice(0, 200) }))
+  await sendLifecycleEmails(probeNewMatches).catch((error) => log('email.lifecycle_error', { error: (error as Error).message.slice(0, 200) }))
 }
 
 /** Queued work for expired radars is dropped; expired radars stop scheduling. */
@@ -86,15 +89,46 @@ async function expireResearch() {
   await query(`delete from rate_limits where window_start < now() - interval '1 day'`).catch(() => undefined)
 }
 
+/** Morning runs stop at the end of the paid period, or of the free trial for a radar that never paid. */
+function scheduleEnd(radar: Pick<RadarRow, 'plan' | 'created_at' | 'research_ends_at'>) {
+  const endsAt = new Date(radar.research_ends_at)
+  if (radar.plan !== 'free') return endsAt
+  return new Date(Math.min(endsAt.getTime(), trialEndsAt(new Date(radar.created_at), config.trialDays).getTime()))
+}
+
+/**
+ * A radar on trial whose first search is done gets its morning runs. The first search normally sets this when it
+ * ends; this covers radars whose first search ended before the trial existed, or without a schedule for any reason.
+ */
+async function scheduleTrialRuns() {
+  if (!(config.trialDays > 0)) return
+  const radars = await query<Pick<RadarRow, 'id' | 'timezone' | 'plan' | 'created_at' | 'research_ends_at'>>(
+    `select r.id, r.timezone, r.plan, r.created_at, r.research_ends_at from radars r
+     where r.plan = 'free' and r.next_run_at is null and r.profile is not null and r.research_ends_at > now()
+       and r.created_at > now() - ($1 || ' days')::interval
+       and exists (select 1 from research_runs rr where rr.radar_id = r.id and rr.kind = 'initial' and rr.status = 'completed')
+       and not exists (select 1 from research_runs rr where rr.radar_id = r.id and rr.kind = 'daily')
+     limit 50`,
+    [String(config.trialDays)],
+  )
+  const now = new Date()
+  for (const radar of radars) {
+    const next = nextDailyRunAt(now, radar.timezone, scheduleEnd(radar), config.dailyRunHour)
+    if (next) await query(`update radars set next_run_at = $2 where id = $1 and next_run_at is null`, [radar.id, next])
+  }
+}
+
 async function enqueueDueDailyRuns() {
-  const due = await query<Pick<RadarRow, 'id' | 'timezone' | 'next_run_at' | 'research_ends_at'>>(
-    `select id, timezone, next_run_at, research_ends_at from radars
-     where next_run_at <= now() and research_ends_at > now() and profile is not null and plan in ('active', 'past_due')
+  const due = await query<Pick<RadarRow, 'id' | 'timezone' | 'next_run_at' | 'research_ends_at' | 'plan' | 'created_at'>>(
+    `select id, timezone, next_run_at, research_ends_at, plan, created_at from radars
+     where next_run_at <= now() and research_ends_at > now() and profile is not null
+       and (plan in ('active', 'past_due') or (plan = 'free' and created_at > now() - ($1 || ' days')::interval))
      order by next_run_at limit 100`,
+    [String(config.trialDays)],
   )
   const now = new Date()
   for (const radar of due) {
-    const next = nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour)
+    const next = nextDailyRunAt(now, radar.timezone, scheduleEnd(radar), config.dailyRunHour)
     // Optimistic claim: only one worker advances next_run_at from this exact value.
     const claimed = await query(
       `update radars set next_run_at = $3 where id = $1 and next_run_at = $2 and research_ends_at > now() returning id`,
@@ -196,6 +230,51 @@ async function withinRadarBudget(radarId: string) {
     [radarId],
   )
   return Number(row?.spend ?? 0) < config.monthlyRadarBudgetUsd
+}
+
+/**
+ * For a sleeping radar: how many recent public posts look like buyers, from a search and triage only (see
+ * probeMatches). Null when no provider can do it. Cheap connectors only, and everything the radar already knows is
+ * excluded, so the count is of posts it has never seen.
+ */
+export async function probeNewMatches(radarId: string, since: Date) {
+  const provider = getProvider()
+  if (provider.name === 'mock') {
+    return { count: 3, titles: ['Sample: Looking for a studio to redesign our pricing page', 'Sample: Anyone know a good CRO consultant for B2B SaaS?'], costUsd: 0 }
+  }
+  if (provider.name !== 'pipeline') return null
+  const radar = await getRadar(radarId)
+  if (!radar?.profile?.acquisition_brief) return null
+  const [memory, leads] = await Promise.all([
+    runMemory(radar.id, 'watch'),
+    query<{ source_key: string }>(`select source_key from leads where radar_id = $1`, [radar.id]),
+  ])
+  const input = buildResearchInput({
+    mode: 'watch',
+    now: new Date(),
+    websiteUrl: radar.website,
+    lastSuccessfulRunAt: null,
+    profile: radar.profile,
+    focus: radar.focus,
+    excluded: [],
+    windowStart: since.toISOString().slice(0, 10),
+  })
+  const probe = await probeMatches(input, {
+    excludeKeys: [...new Set([...leads.map((lead) => lead.source_key), ...memory.excludeKeys])],
+    priorityTopics: memory.priorityTopics,
+    deadTopics: memory.deadTopics,
+    connectors: ['exa', 'hn'],
+  })
+  const { usage } = probe
+  const costUsd =
+    (usage.input_tokens / 1e6) * config.cost.inputPerMTok +
+    (usage.output_tokens / 1e6) * config.cost.outputPerMTok +
+    ((usage.small_input_tokens ?? 0) / 1e6) * config.cost.smallInputPerMTok +
+    ((usage.small_output_tokens ?? 0) / 1e6) * config.cost.smallOutputPerMTok +
+    usage.web_search_calls * config.cost.perWebSearch +
+    (usage.extra_cost_usd ?? 0)
+  log('probe.completed', { radar: radar.id, count: probe.count, cost_usd: Number(costUsd.toFixed(4)) })
+  return { count: probe.count, titles: probe.titles, costUsd }
 }
 
 /* --------------------------------- Start ---------------------------------- */
@@ -679,9 +758,9 @@ async function saveResults(
   // Profile, leads, candidates, follow-up and run outcome persist atomically.
   await transaction(async (tx) => {
     if (run.kind === 'initial') {
-      // The free first search does not schedule anything; an active plan gets its morning run.
-      const live = agentLive(radar.plan, new Date(radar.research_ends_at), now)
-      const nextRun = profile && live ? nextDailyRunAt(now, radar.timezone, new Date(radar.research_ends_at), config.dailyRunHour) : null
+      // A radar on trial or on a paid plan gets its morning runs; a sleeping one schedules nothing.
+      const live = agentLive(radar.plan, new Date(radar.research_ends_at), now, { createdAt: new Date(radar.created_at), trialDays: config.trialDays })
+      const nextRun = profile && live ? nextDailyRunAt(now, radar.timezone, scheduleEnd(radar), config.dailyRunHour) : null
       await tx.query(`update radars set profile = $2, next_run_at = coalesce(next_run_at, $3) where id = $1`, [
         radar.id,
         profileToSave ? toJsonb(profileToSave) : null,

@@ -1,15 +1,19 @@
 import { PricingSingleTierTwoColumn } from '@/components/sections/pricing-single-tier-two-column'
+import { TRIAL_DAYS } from '@/lib/trial'
 import { WebsiteForm } from './website-form'
 
 export function Pricing() {
   return (
     <PricingSingleTierTwoColumn
       id="pricing"
-      headline="Your first leads are free."
+      headline={`Free for ${TRIAL_DAYS} days. No card.`}
       subheadline={
         <>
-          <p>Enter your website and we run a full search right away: every lead, source and first message.</p>
-          <p>Activate your agent from your private page once your first leads are in. Cancel any time.</p>
+          <p>
+            Enter your website and your agent starts right away: a full first search, then a new one every morning for {TRIAL_DAYS} days. Every lead, source
+            and first message, nothing locked.
+          </p>
+          <p>After that it sleeps until you activate it from your private page. Your leads stay. Cancel any time.</p>
         </>
       }
       price="$99"

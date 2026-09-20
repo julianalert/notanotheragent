@@ -35,6 +35,7 @@ import {
   type OutputItem,
   type PartialResult,
   type ResearchProvider,
+  type RunContext,
   type RunProgress,
   type ToolAction,
   type Usage,
@@ -263,35 +264,7 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
 
     async start(input, context = {}) {
       if (!process.env.OPENAI_API_KEY) throw new ResearchError('configuration', 'OPENAI_API_KEY is required for the research pipeline')
-      const state: PipelineState = {
-        version: 1,
-        step: 'brief',
-        attempts: {},
-        startedAt: new Date().toISOString(),
-        stepStartedAt: new Date().toISOString(),
-        input,
-        connectors: context.connectors ?? null,
-        subreddits: context.subreddits ?? [],
-        excludeKeys: context.excludeKeys ?? [],
-        priorityTopics: context.priorityTopics ?? [],
-        deadTopics: context.deadTopics ?? [],
-        profile: null,
-        websitePages: [],
-        plannedQueries: [],
-        topics: [],
-        hits: [],
-        searches: [],
-        unavailable: [],
-        triage: [],
-        sources: [],
-        accessFailures: [],
-        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 0, small_input_tokens: 0, small_output_tokens: 0, extra_cost_usd: 0 },
-        qualifyResponseId: null,
-        resultText: null,
-        auditUrls: [],
-        actions: [],
-        error: null,
-      }
+      const state = newState(input, context)
       const id = await store.create(state)
       return { responseId: id }
     },
@@ -374,6 +347,61 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
       state.error = { code: 'timed_out', message: 'Cancelled at the deadline' }
       await store.save(id, state)
     },
+  }
+}
+
+function newState(input: ResearchInput, context: RunContext): PipelineState {
+  return {
+    version: 1,
+    step: 'brief',
+    attempts: {},
+    startedAt: new Date().toISOString(),
+    stepStartedAt: new Date().toISOString(),
+    input,
+    connectors: context.connectors ?? null,
+    subreddits: context.subreddits ?? [],
+    excludeKeys: context.excludeKeys ?? [],
+    priorityTopics: context.priorityTopics ?? [],
+    deadTopics: context.deadTopics ?? [],
+    profile: null,
+    websitePages: [],
+    plannedQueries: [],
+    topics: [],
+    hits: [],
+    searches: [],
+    unavailable: [],
+    triage: [],
+    sources: [],
+    accessFailures: [],
+    usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, web_search_calls: 0, small_input_tokens: 0, small_output_tokens: 0, extra_cost_usd: 0 },
+    qualifyResponseId: null,
+    resultText: null,
+    auditUrls: [],
+    actions: [],
+    error: null,
+  }
+}
+
+/** Triage score from which a search hit "looks like a buyer" in a probe (hits are read in full from 1). */
+const PROBE_MIN_SCORE = 2
+
+/**
+ * A look without a run: search and triage only, for a radar that already has its brief. Nothing is read in full,
+ * qualified or stored, so it costs a few cents. It answers "is anything new out there?" for a sleeping radar, and
+ * its count is of posts that look like buyers from their previews, never of verified leads.
+ */
+export async function probeMatches(input: ResearchInput, context: RunContext = {}) {
+  if (!input.profile?.acquisition_brief) throw new ResearchError('configuration', 'A probe needs a saved profile with its brief')
+  const state = newState(input, context)
+  await stepBrief(state)
+  if (stepOf(state) === 'search') await stepSearch(state)
+  if (stepOf(state) === 'triage') await stepTriage(state)
+  const titleByUrl = new Map(state.hits.map((hit) => [hit.url, hit.title]))
+  const likely = state.triage.filter((hit) => hit.score >= PROBE_MIN_SCORE).sort((a, b) => b.score - a.score)
+  return {
+    count: likely.length,
+    titles: likely.map((hit) => (titleByUrl.get(hit.url) ?? '').trim()).filter((title) => title.length > 8).slice(0, 5),
+    usage: state.usage,
   }
 }
 

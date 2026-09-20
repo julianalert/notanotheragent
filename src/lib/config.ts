@@ -1,3 +1,5 @@
+import { TRIAL_DAYS } from './trial'
+
 function num(name: string, fallback: number) {
   const value = Number(process.env[name])
   return Number.isFinite(value) && process.env[name] !== '' && process.env[name] !== undefined ? value : fallback
@@ -21,6 +23,9 @@ export const config = {
   // A watch-run lead with an explicit request and at least this score (of 10) is emailed at once.
   instantAlertMinScore: num('INSTANT_ALERT_MIN_SCORE', 8),
   planPriceUsd: num('PLAN_PRICE_USD', 99),
+  // Free trial: the agent works for this many days after signup, no card. 0 turns it (and the trial emails) off.
+  // The marketing copy says TRIAL_DAYS (src/lib/trial.ts): change both together.
+  trialDays: num('TRIAL_DAYS', TRIAL_DAYS),
   maxAutomaticRetries: 1,
   maxManualRetries: 3,
   dailyRunHour: 8,

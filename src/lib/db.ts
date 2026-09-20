@@ -260,6 +260,22 @@ create table if not exists rate_limits (
   primary key (key, window_start)
 );
 
+-- Emails sent on the trial's clock (a day before it ends, when it ends, a look at what appeared since, a last note).
+-- One row per radar and kind: the row is the claim, so concurrent ticks never send twice.
+create table if not exists lifecycle_emails (
+  id uuid primary key default gen_random_uuid(),
+  radar_id uuid not null references radars(id) on delete cascade,
+  kind text not null,
+  status text not null check (status in ('sending', 'sent', 'skipped', 'failed')),
+  attempts integer not null default 1,
+  detail text,
+  -- What the look at new posts cost (missed_matches only).
+  cost_usd numeric(10, 4),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (radar_id, kind)
+);
+
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (
   id uuid primary key default gen_random_uuid(),

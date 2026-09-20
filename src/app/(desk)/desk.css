@@ -261,6 +261,8 @@
 .desk .tag--problem { background: var(--i-problem-bg); color: var(--i-problem); }
 .desk .tag--request { background: var(--i-request-bg); color: var(--i-request); }
 .desk .tag--trigger { background: var(--i-trigger-bg); color: var(--i-trigger); }
+.desk .rail-trial { margin: 10px 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--rail-dim); }
+.desk .rail-trial b { color: #fff; font-weight: 600; }
 .desk .rail-warn { margin: 8px 0 10px; font-size: 12.5px; color: #9c2f1f; line-height: 1.45; }
 .desk .rail-muted { margin: 6px 0 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
 .desk .rail-form { display: grid; gap: 6px; margin-top: 8px; }

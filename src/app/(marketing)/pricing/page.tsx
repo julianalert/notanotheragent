@@ -1,3 +1,4 @@
+import { TRIAL_DAYS } from '@/lib/trial'
 import { ButtonLink } from '@/components/elements/button'
 import { Main } from '@/components/elements/main'
 import { CallToActionSimpleCentered } from '@/components/sections/call-to-action-simple-centered'
@@ -14,14 +15,14 @@ import { WebsiteForm } from '../website-form'
 
 export const metadata: Metadata = {
   title: 'Pricing — Not Another Agent',
-  description: 'Your first search is free. Keep your agent finding new leads every morning for $99 a month.',
+  description: `Free for ${TRIAL_DAYS} days, no card. Keep your agent finding new leads every morning for $99 a month.`,
   alternates: { canonical: '/pricing' },
   openGraph: {
     type: 'website',
     siteName: 'Not Another Agent',
     url: '/pricing',
     title: 'Pricing — Not Another Agent',
-    description: 'Your first search is free. Keep your agent finding new leads every morning for $99 a month.',
+    description: `Free for ${TRIAL_DAYS} days, no card. Keep your agent finding new leads every morning for $99 a month.`,
   },
 }
 
@@ -49,11 +50,11 @@ export default function PricingPage() {
       <Main>
         <HeroSimpleCentered
           id="hero"
-          headline="Get your first leads for free."
+          headline={`Free for ${TRIAL_DAYS} days. Then one flat price.`}
           subheadline={
             <p>
-              Your first search is free. When you want new leads every morning, keep your agent running for one flat
-              monthly price.
+              Your agent works for {TRIAL_DAYS} days without a card: a first search, then a new one every morning. When you want it to
+              keep going, it’s one flat monthly price.
             </p>
           }
         />
@@ -70,7 +71,7 @@ export default function PricingPage() {
         <CallToActionSimpleCentered
           id="call-to-action"
           headline="See who is asking for what you sell this week."
-          subheadline={<p>Your first search is free and needs no account. Your first leads usually arrive within minutes.</p>}
+          subheadline={<p>The first {TRIAL_DAYS} days are free and need no account or card. Your first leads usually arrive within minutes.</p>}
           cta={<WebsiteForm />}
         />
       </Main>

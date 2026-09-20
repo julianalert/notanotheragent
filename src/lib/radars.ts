@@ -4,7 +4,7 @@ import { config } from './config'
 import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
 import { toJsonb } from './jsonb'
-import { agentLive, type Plan } from './billing/subscription'
+import { agentLive, onTrial, trialEndsAt, type Plan } from './billing/subscription'
 import { RERUN_KEY, type BusinessProfileT, type DismissReason, type Focus, type LeadT, type RunOutcome } from './research/contract'
 import { getProvider, type RunProgress } from './research/provider'
 import { isValidTimeZone, nextDailyRunAt } from './time'
@@ -148,8 +148,10 @@ export type RadarView = {
   emailUnsubscribed: boolean
   webhookUrl: string | null
   plan: Plan
-  /** Scheduled research (daily and watch runs) is happening for this radar. */
+  /** Scheduled research (daily and watch runs) is happening for this radar: a paid plan, or the free trial. */
   agentLive: boolean
+  /** The free trial of a radar that never paid: running until `endsAt`, over afterwards. Null on any other plan. */
+  trial: { active: boolean; endsAt: string; days: number } | null
   currentPeriodEnd: string | null
   priceUsd: number
   billingConfigured: boolean
@@ -298,7 +300,9 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   ])
   const now = new Date()
   const endsAt = new Date(radar.research_ends_at)
-  const live = agentLive(radar.plan, endsAt, now)
+  const createdAt = new Date(radar.created_at)
+  const live = agentLive(radar.plan, endsAt, now, { createdAt, trialDays: config.trialDays })
+  const trialActive = onTrial(radar.plan, createdAt, config.trialDays, now)
   // A free radar is never "expired" while its first search can still run; a paid one expires when the plan lapses.
   const expired = now.getTime() >= endsAt.getTime()
   const profile = radar.profile
@@ -320,7 +324,8 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   )
   const rerunReason = leads.length === 0 ? ('no_leads' as const) : focusChanged ? ('focus_changed' as const) : null
   const initialDone = runs.some((run) => run.kind === 'initial' && run.status === 'completed')
-  const rerunAvailable = radar.plan === 'free' && !expired && Boolean(profile) && initialDone && !inProgress && !rerunUsed && rerunReason !== null
+  // With a trial, the second search belongs to it: afterwards the agent sleeps until it is activated.
+  const rerunAvailable = radar.plan === 'free' && (trialActive || !(config.trialDays > 0)) && !expired && Boolean(profile) && initialDone && !inProgress && !rerunUsed && rerunReason !== null
 
   const services = radar.focus?.services.length ? radar.focus.services.slice(0, 2).map(label) : values(profile?.services, 2)
   const markets = radar.focus?.market ? [radar.focus.market] : values(profile?.markets, 2)
@@ -369,6 +374,7 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     webhookUrl: radar.webhook_url,
     plan: radar.plan,
     agentLive: live,
+    trial: radar.plan === 'free' && config.trialDays > 0 ? { active: trialActive, endsAt: trialEndsAt(createdAt, config.trialDays).toISOString(), days: config.trialDays } : null,
     currentPeriodEnd: iso(radar.current_period_end),
     priceUsd: config.planPriceUsd,
     billingConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID),

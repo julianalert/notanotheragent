@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentLive, aliveUntil, applyBillingEvent, GRACE_DAYS, planForSubscriptionStatus, type PlanState } from './subscription'
+import { agentLive, aliveUntil, applyBillingEvent, GRACE_DAYS, onTrial, planForSubscriptionStatus, trialEndsAt, type PlanState } from './subscription'
 
 const NOW = new Date('2026-09-15T10:00:00Z')
 const DAY_MS = 86_400_000
@@ -53,7 +53,26 @@ describe('plan lifecycle', () => {
     expect(planForSubscriptionStatus('unpaid')).toBe('past_due')
   })
 
-  it('a free radar is never live, even before its first-search deadline', () => {
+  it('a free radar without a trial is never live, even before its first-search deadline', () => {
     expect(agentLive('free', free.research_ends_at, NOW)).toBe(false)
+    expect(agentLive('free', free.research_ends_at, NOW, { createdAt: NOW, trialDays: 0 })).toBe(false)
+  })
+
+  it('the free trial keeps a radar that never paid live for its days, then it sleeps', () => {
+    const createdAt = new Date(NOW.getTime() - 2 * 86_400_000)
+    const trial = { createdAt, trialDays: 3 }
+    expect(trialEndsAt(createdAt, 3)).toEqual(new Date(NOW.getTime() + 86_400_000))
+    expect(onTrial('free', createdAt, 3, NOW)).toBe(true)
+    expect(agentLive('free', free.research_ends_at, NOW, trial)).toBe(true)
+    const after = new Date(NOW.getTime() + 86_400_000)
+    expect(onTrial('free', createdAt, 3, after)).toBe(false)
+    expect(agentLive('free', free.research_ends_at, after, trial)).toBe(false)
+  })
+
+  it('a cancelled plan never falls back to the trial; a paid one does not need it', () => {
+    const trial = { createdAt: NOW, trialDays: 3 }
+    expect(onTrial('cancelled', NOW, 3, NOW)).toBe(false)
+    expect(agentLive('cancelled', active.research_ends_at, NOW, trial)).toBe(false)
+    expect(agentLive('active', active.research_ends_at, NOW, trial)).toBe(true)
   })
 })

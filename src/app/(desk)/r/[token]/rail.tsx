@@ -45,6 +45,10 @@ export function Rail({
   const canActivate = view.billingConfigured && firstSearchDone && view.plan !== 'active'
   const canManageBilling = view.billingConfigured && view.plan !== 'free'
   const nextSearch = view.nextRunAt ? `${relativeDay(view.nextRunAt, view.now, view.timezone)} ${clock(view.nextRunAt, view.timezone)}` : null
+  // The free trial: the agent is live without a plan until `trial.endsAt`, then asleep until it is activated.
+  const trialLive = Boolean(view.trial?.active)
+  const trialOver = Boolean(view.trial && !view.trial.active)
+  const trialEnd = view.trial ? `${relativeDay(view.trial.endsAt, view.now, view.timezone)} ${clock(view.trial.endsAt, view.timezone)}` : null
   const liveSummary = `lead${foundToday === 1 ? '' : 's'} found today${nextSearch ? `, next search ${nextSearch}, ${view.timezone}` : ''}`
 
   // Close the mobile/tablet burger menu when clicking anywhere outside it.
@@ -69,7 +73,7 @@ export function Rail({
     <>
       <span className="live">
         <i aria-hidden="true" />
-        {view.plan === 'past_due' ? 'Agent live · payment failed' : 'Agent live'}
+        {view.plan === 'past_due' ? 'Agent live · payment failed' : trialLive ? 'Agent live · free trial' : 'Agent live'}
       </span>
       <p className="days">
         {foundToday}
@@ -115,14 +119,26 @@ export function Rail({
           </button>
         </>
       )}
+      {trialLive && (
+        <>
+          <p className="rail-trial">
+            Free until <b>{trialEnd}</b>, no card needed. After that your agent sleeps until you activate it.
+          </p>
+          {canActivate && (
+            <button type="button" className="btn btn--brand btn--sm" onClick={onActivate} disabled={activating}>
+              {activating ? 'Opening checkout…' : `Keep my agent · $${view.priceUsd}/month`}
+            </button>
+          )}
+        </>
+      )}
     </>
   ) : (
     <>
       <span className="pitch__badge">
         <span aria-hidden="true">😴</span>
-        {view.plan === 'cancelled' || view.plan === 'past_due' ? 'Agent stopped' : 'Agent asleep'}
+        {view.plan === 'cancelled' || view.plan === 'past_due' ? 'Agent stopped' : trialOver ? 'Trial ended · agent asleep' : 'Agent asleep'}
       </span>
-      <p className="pitch__title">Wake it up for fresh leads every morning</p>
+      <p className="pitch__title">{trialOver ? 'Your free trial is over. Wake your agent for fresh leads every morning' : 'Wake it up for fresh leads every morning'}</p>
       <ul className="pitch__list">
         {['New leads every morning', 'Watches where buyers post', 'Learns from your choices'].map((item) => (
           <li key={item}>
@@ -281,8 +297,17 @@ export function Rail({
       {view.agentLive ? (
         <div className="mobile-agent-bar">
           <span className="mobile-agent-bar__text">
-            {view.plan === 'past_due' ? 'Payment failed — update your card to keep the agent running.' : `${foundToday} ${liveSummary}`}
+            {view.plan === 'past_due'
+              ? 'Payment failed — update your card to keep the agent running.'
+              : trialLive
+                ? `Free trial until ${trialEnd}`
+                : `${foundToday} ${liveSummary}`}
           </span>
+          {trialLive && canActivate && (
+            <button type="button" className="btn btn--brand btn--sm" onClick={onActivate} disabled={activating}>
+              {activating ? 'Opening checkout…' : `Keep agent · $${view.priceUsd}`}
+            </button>
+          )}
           {view.plan === 'past_due' && (
             <button type="button" className="btn btn--line btn--sm" onClick={onPortal}>
               Update card
@@ -292,7 +317,7 @@ export function Rail({
       ) : (
         canActivate && (
           <div className="mobile-agent-bar">
-            <span className="mobile-agent-bar__text">Get new leads every morning in your inbox</span>
+            <span className="mobile-agent-bar__text">{trialOver ? 'Your free trial is over. Wake your agent' : 'Get new leads every morning in your inbox'}</span>
             <button type="button" className="btn btn--brand btn--sm" onClick={onActivate} disabled={activating}>
               {activating ? 'Opening checkout…' : `${view.plan === 'free' ? 'Activate' : 'Reactivate'} agent · $${view.priceUsd}`}
             </button>

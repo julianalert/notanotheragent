@@ -42,7 +42,13 @@ export type RunEmailInput = {
   privateUrl: string
   unsubscribeUrl: string
   plan: 'free' | 'active' | 'past_due' | 'cancelled'
+  /** The free trial of a radar that never paid: still running, or over. Absent when trials are off. */
+  trial?: { active: boolean; endsAt: Date; timezone: string } | null
 }
+
+/** "Thursday, Sep 24" in the radar's timezone. */
+const trialDay = (trial: { endsAt: Date; timezone: string }) =>
+  new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'short', day: 'numeric', timeZone: trial.timezone }).format(trial.endsAt)
 
 const plural = (count: number, one: string, many: string) => (count === 1 ? one : many)
 
@@ -98,7 +104,10 @@ function introFor(input: RunEmailInput) {
   if (input.outcome === 'unsupported_business') {
     return 'Your website doesn’t look like a business whose buyers post public requests, so we didn’t search.'
   }
-  return 'We couldn’t verify any strong matches today. We never pad the list, and we’ll search again every morning.'
+  const again = input.plan !== 'free' || input.trial?.active
+  return `We couldn’t verify any strong matches today. We never pad the list${again ? ', and we’ll search again every morning' : ''}.${
+    input.trial?.active ? ` Your free trial runs until ${trialDay(input.trial)}.` : ''
+  }`
 }
 
 function footerFor(input: RunEmailInput, host: string) {
@@ -110,6 +119,10 @@ function footerFor(input: RunEmailInput, host: string) {
     case 'cancelled':
       return `Your agent for ${host} is stopped. Your leads stay on your private page; reactivate it there whenever you want new ones.`
     default:
+      if (input.trial?.active) {
+        return `Your agent is on a free trial for ${host}: it searches every morning until ${trialDay(input.trial)}, no card needed. Activate it to keep it running after that.`
+      }
+      if (input.trial) return `Your free trial for ${host} has ended and your agent is asleep. Activate it to search every morning again.`
       return `This was your free first search for ${host}. Activate your agent to search every morning and learn from what you contact.`
   }
 }
@@ -201,4 +214,156 @@ export function renderRunEmail(input: RunEmailInput) {
   ].join('\n')
 
   return { subject, html, text }
+}
+
+/* ------------------------------- Lifecycle -------------------------------- */
+
+/*
+ * Emails sent on the trial's clock rather than after a run: a day before it ends, when it ends, a look at what
+ * appeared since, and one last note. Same shell and rules as the run emails. They stop as soon as the radar is
+ * activated or the address unsubscribes.
+ */
+
+export type LifecycleKind = 'trial_ending' | 'trial_ended' | 'missed_matches' | 'last_call'
+
+export type LifecycleEmailInput = {
+  kind: LifecycleKind
+  websiteHost: string
+  privateUrl: string
+  unsubscribeUrl: string
+  priceUsd: number
+  trialDays: number
+  /** What the trial produced. */
+  found: number
+  contacted: number
+  /** Leads not yet contacted or dismissed, best first (trial_ending shows two). */
+  open: Array<{ id: string; data: LeadT }>
+  /** missed_matches: recent posts that look like buyers, from previews only. Titles are shown as text, never linked. */
+  missed?: { count: number; titles: string[] }
+}
+
+function lifecycleCopy(input: LifecycleEmailInput): { subject: string; headline: string; paragraphs: string[]; cta: string } {
+  const host = input.websiteHost
+  const leads = `${input.found} ${plural(input.found, 'lead', 'leads')}`
+  const recap =
+    input.found === 0
+      ? `Your agent has searched for ${host} every morning and hasn’t found a verified match yet. That happens: most buyer posts appear over weeks, not days.`
+      : `So far your agent has found ${leads} for ${host}${input.contacted ? `, and you contacted ${input.contacted}` : ''}.`
+  const price = `$${input.priceUsd} a month, cancel any time`
+  switch (input.kind) {
+    case 'trial_ending':
+      return {
+        subject: `Your free trial for ${host} ends tomorrow`,
+        headline: 'One day left on your free trial',
+        paragraphs: [
+          recap,
+          `Tomorrow it goes to sleep. Activate it and it keeps searching every morning and learning from every lead you contact or dismiss: ${price}.`,
+          ...(input.found > 0 && input.contacted === 0
+            ? ['Two things get replies: answer within a day of the post, and open with their words rather than your pitch. A first message is already written on each lead.']
+            : []),
+        ],
+        cta: 'Keep my agent running',
+      }
+    case 'trial_ended':
+      return {
+        subject: `Your agent for ${host} is asleep`,
+        headline: 'Your free trial has ended',
+        paragraphs: [
+          input.found === 0
+            ? `Over ${input.trialDays} days your agent searched for ${host} every morning without finding a verified match. It never pads the list.`
+            : `Over ${input.trialDays} days your agent found ${leads} for ${host}${input.contacted ? ` and you contacted ${input.contacted}` : ''}. Your leads, sources and first messages stay on your private page.`,
+          `Nothing new is being searched now. Activate your agent and it picks up tomorrow morning with everything it learned from your choices: ${price}.`,
+        ],
+        cta: `Activate my agent · $${input.priceUsd}/month`,
+      }
+    case 'missed_matches': {
+      const count = input.missed?.count ?? 0
+      return {
+        subject: `${count} new ${plural(count, 'post looks', 'posts look')} like ${plural(count, 'a buyer', 'buyers')} for ${host}`,
+        headline: `${count} ${plural(count, 'post', 'posts')} since your agent went to sleep`,
+        paragraphs: [
+          `We took a quick look at the public web for ${host}: ${count} recent ${plural(count, 'post looks', 'posts look')} like someone who needs what you sell.`,
+          'We only read their previews. Opening each one, checking the date and the author, and writing a first message is what your agent does when it’s active.',
+        ],
+        cta: 'Wake my agent to check them',
+      }
+    }
+    case 'last_call':
+      return {
+        subject: `Your radar for ${host} is still here`,
+        headline: '“Every day I start at least one conversation”',
+        paragraphs: [
+          '“Every day I start at least one conversation with a company that’s actively looking for what we build. These are serious buyers with real budgets, and some of them have become our biggest contracts.” Clément Bernard, founder of VisionBDS.',
+          `Your radar for ${host} keeps everything it learned${input.found ? ` and the ${leads} it found` : ''}. This is our last email about it: activate your agent whenever you’re ready, ${price}.`,
+        ],
+        cta: 'Activate my agent',
+      }
+  }
+}
+
+export function renderLifecycleEmail(input: LifecycleEmailInput) {
+  const copy = lifecycleCopy(input)
+  const activateUrl = `${input.privateUrl}#activate`
+  const shown = input.kind === 'trial_ending' ? input.open.slice(0, 2) : []
+  const titles = input.kind === 'missed_matches' ? (input.missed?.titles ?? []).slice(0, 3) : []
+
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(copy.subject)}</title></head>
+<body style="margin:0;padding:0;background:#f5f6f6;color:${INK}">
+  <div style="display:none;max-height:0;overflow:hidden;font-size:1px;line-height:1px;color:#f5f6f6">${escapeHtml(copy.paragraphs[0])}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6f6">
+    <tr><td align="center" style="padding:32px 16px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:16px">
+        <tr><td style="padding:32px 32px 8px">
+          <p style="margin:0 0 28px;font:600 13px/18px ${SANS};letter-spacing:0.02em;color:${INK}">
+            <span style="display:inline-block;width:9px;height:9px;border-radius:999px;background:#f97316;background-image:linear-gradient(90deg,#f97316,#f43f5e);vertical-align:1px;margin-right:8px"></span>${escapeHtml(BRAND)}
+          </p>
+          <p style="margin:0 0 6px;font:600 12px/18px ${SANS};letter-spacing:0.04em;text-transform:uppercase;color:${MUTED}">Your radar &middot; ${plainDomain(input.websiteHost)}</p>
+          <h1 style="margin:0 0 12px;font:400 32px/38px ${SERIF};color:${INK}">${escapeHtml(copy.headline)}</h1>
+          ${copy.paragraphs.map((text) => `<p style="margin:0 0 16px;font:400 15px/24px ${SANS};color:${MUTED}">${escapeHtml(text).replace(escapeHtml(input.websiteHost), plainDomain(input.websiteHost))}</p>`).join('\n          ')}
+        </td></tr>
+        ${
+          shown.length
+            ? `<tr><td style="padding:0 32px">
+          <p style="margin:0 0 10px;font:600 12px/18px ${SANS};letter-spacing:0.04em;text-transform:uppercase;color:${MUTED}">Still to review</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${shown.map((lead) => leadHtml(lead, input.privateUrl)).join('')}</table>
+        </td></tr>`
+            : ''
+        }
+        ${
+          titles.length
+            ? `<tr><td style="padding:0 32px 8px">
+          ${titles.map((title) => `<p style="margin:0 0 8px;padding:12px 16px;background:${SOFT};border-radius:10px;font:500 14px/21px ${SANS};color:${INK}">${escapeHtml(title)}</p>`).join('')}
+        </td></tr>`
+            : ''
+        }
+        <tr><td style="padding:12px 32px 32px">
+          <a href="${escapeHtml(activateUrl)}" style="display:inline-block;padding:11px 22px;border-radius:999px;background:#f97316;background-image:linear-gradient(90deg,#f97316,#f43f5e);font:600 14px/20px ${SANS};color:#ffffff;text-decoration:none">${escapeHtml(copy.cta)}</a>
+          <p style="margin:24px 0 0;font:400 13px/20px ${SANS};color:${MUTED}"><a href="${escapeHtml(input.privateUrl)}" style="color:${INK};font-weight:600;text-decoration:none">Open my private page &rarr;</a></p>
+          <p style="margin:12px 0 0;font:400 13px/20px ${SANS};color:${MUTED}">Keep this email private: its link opens your results.</p>
+        </td></tr>
+      </table>
+      <p style="margin:16px 0 0;font:400 12px/18px ${SANS};color:${MUTED}">
+        You’re receiving this because you asked ${escapeHtml(BRAND)} to research leads for ${plainDomain(input.websiteHost)}.
+        <a href="${escapeHtml(input.unsubscribeUrl)}" style="color:${MUTED};text-decoration:underline">Unsubscribe</a>
+      </p>
+    </td></tr>
+  </table>
+</body></html>`
+
+  const text = [
+    copy.headline,
+    '',
+    ...copy.paragraphs.flatMap((paragraph) => [paragraph, '']),
+    ...shown.flatMap((lead) => [`- ${lead.data.headline}`, `  ${input.privateUrl}#lead-${lead.id}`]),
+    ...titles.map((title) => `- ${title}`),
+    ...(shown.length || titles.length ? [''] : []),
+    `${copy.cta}: ${activateUrl}`,
+    `Open my private page: ${input.privateUrl}`,
+    '',
+    'Keep this email private: its link opens your results.',
+    `Unsubscribe: ${input.unsubscribeUrl}`,
+  ].join('\n')
+
+  return { subject: copy.subject, html, text }
 }

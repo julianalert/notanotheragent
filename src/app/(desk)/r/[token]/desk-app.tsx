@@ -508,7 +508,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
             {run?.status !== 'failed' && run?.status !== 'cancelled' && (
               <>
                 <Understood view={view} onAdjust={() => setEditingFocus(true)} />
-                <WaitFooter emailMasked={view.emailMasked} linkCopied={linkCopied} onCopyLink={copyPrivateLink} />
+                <WaitFooter emailMasked={view.emailMasked} trialDays={view.trial?.active ? view.trial.days : null} linkCopied={linkCopied} onCopyLink={copyPrivateLink} />
               </>
             )}
           </div>

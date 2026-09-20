@@ -240,6 +240,22 @@ create table if not exists public.rate_limits (
   primary key (key, window_start)
 );
 
+-- Emails sent on the trial's clock (a day before it ends, when it ends, a look at what appeared since, a last note).
+-- One row per radar and kind: the row is the claim, so concurrent ticks never send twice.
+create table if not exists public.lifecycle_emails (
+  id uuid primary key default gen_random_uuid(),
+  radar_id uuid not null references public.radars(id) on delete cascade,
+  kind text not null,
+  status text not null check (status in ('sending', 'sent', 'skipped', 'failed')),
+  attempts integer not null default 1,
+  detail text,
+  -- What the look at new posts cost (missed_matches only).
+  cost_usd numeric(10, 4),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (radar_id, kind)
+);
+
 -- Security: the app connects server-side with the database connection string and scopes every query by the
 -- radar's secret token. Nothing should be reachable through Supabase's public Data API (anon/authenticated keys).
 -- RLS enabled with no policies = deny all for those roles. The postgres role used by the app bypasses RLS.
@@ -255,8 +271,9 @@ alter table public.stripe_events enable row level security;
 alter table public.watched_sources enable row level security;
 alter table public.events enable row level security;
 alter table public.rate_limits enable row level security;
+alter table public.lifecycle_emails enable row level security;
 
-revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources, public.events, public.rate_limits from anon, authenticated;
+revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources, public.events, public.rate_limits, public.lifecycle_emails from anon, authenticated;
 
 -- Useful pilot queries (spec §2.3):
 --   Cost and time per run:

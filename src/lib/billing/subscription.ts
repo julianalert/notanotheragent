@@ -98,7 +98,21 @@ export function applyBillingEvent(state: PlanState, event: BillingEvent, now: Da
   }
 }
 
-/** Whether the agent is doing scheduled research for this radar right now. */
-export function agentLive(plan: Plan, researchEndsAt: Date, now: Date) {
+/**
+ * The free trial: a new radar's agent works for TRIAL_DAYS from its creation, with no card. It is derived from
+ * created_at, so nothing is stored and nothing needs resetting: a radar that never paid is on trial until then and
+ * asleep afterwards. Paying at any point replaces it; a cancelled plan never returns to it.
+ */
+export function trialEndsAt(createdAt: Date, trialDays: number) {
+  return new Date(createdAt.getTime() + trialDays * DAY_MS)
+}
+
+export function onTrial(plan: Plan, createdAt: Date, trialDays: number, now: Date) {
+  return plan === 'free' && trialDays > 0 && now.getTime() < trialEndsAt(createdAt, trialDays).getTime()
+}
+
+/** Whether the agent is doing scheduled research for this radar right now: a paid plan in its period, or the trial. */
+export function agentLive(plan: Plan, researchEndsAt: Date, now: Date, trial?: { createdAt: Date; trialDays: number }) {
+  if (trial && onTrial(plan, trial.createdAt, trial.trialDays, now)) return true
   return (plan === 'active' || plan === 'past_due') && now.getTime() < researchEndsAt.getTime()
 }

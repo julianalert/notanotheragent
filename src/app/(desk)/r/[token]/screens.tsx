@@ -241,7 +241,18 @@ export function Understood({ view, onAdjust }: { view: RadarView; onAdjust: () =
 }
 
 /** Under the progress: how to get back, since there is no account. */
-export function WaitFooter({ emailMasked, linkCopied, onCopyLink }: { emailMasked: string | null; linkCopied: boolean; onCopyLink: () => void }) {
+export function WaitFooter({
+  emailMasked,
+  trialDays,
+  linkCopied,
+  onCopyLink,
+}: {
+  emailMasked: string | null
+  /** Set while the free trial runs: the agent keeps searching after this first search. */
+  trialDays: number | null
+  linkCopied: boolean
+  onCopyLink: () => void
+}) {
   return (
     <div className="focus-note">
       <span aria-hidden="true">💌</span>
@@ -250,6 +261,11 @@ export function WaitFooter({ emailMasked, linkCopied, onCopyLink }: { emailMaske
           You can close this tab: we’ll email {emailMasked ?? 'you'} the moment your first leads are ready. The first ones usually show up
           here before the search ends.
         </p>
+        {trialDays && (
+          <p>
+            After this first search your agent keeps going: a new search every morning for {trialDays} days, free, no card needed.
+          </p>
+        )}
         <p>
           There’s no account, so this page’s link is your way back.{' '}
           <button type="button" className="link" onClick={onCopyLink}>

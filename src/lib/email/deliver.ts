@@ -1,5 +1,7 @@
 import 'server-only'
 import { decryptToken, unsubscribeCode } from '../crypto'
+import { onTrial, trialEndsAt } from '../billing/subscription'
+import { config } from '../config'
 import { query } from '../db'
 import { appUrl } from '../site'
 import type { LeadT, RunOutcome } from '../research/contract'
@@ -29,6 +31,8 @@ type ClaimedRun = {
   website_host: string
   business_name: string | null
   research_ends_at: Date
+  created_at: Date
+  timezone: string
 }
 
 /**
@@ -64,7 +68,7 @@ export async function sendPendingEmails() {
        ) and r.id = rr.radar_id
        returning rr.id, rr.radar_id, rr.kind, rr.run_key, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext, r.plan,
          (select p.kind from research_runs p where p.id = rr.parent_run_id) as parent_kind,
-         r.website_host, r.profile->>'name' as business_name, r.research_ends_at`,
+         r.website_host, r.profile->>'name' as business_name, r.research_ends_at, r.created_at, r.timezone`,
     )
     if (!run) break
     await deliver(run)
@@ -106,6 +110,10 @@ async function deliver(run: ClaimedRun) {
     privateUrl,
     unsubscribeUrl,
     plan: run.plan,
+    trial:
+      run.plan === 'free' && config.trialDays > 0
+        ? { active: onTrial(run.plan, new Date(run.created_at), config.trialDays, new Date()), endsAt: trialEndsAt(new Date(run.created_at), config.trialDays), timezone: run.timezone }
+        : null,
   })
 
   const result = await sendEmail({

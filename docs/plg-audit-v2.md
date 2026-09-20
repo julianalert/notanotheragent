@@ -186,6 +186,8 @@ ICE = Impact · Confidence · Ease, each out of 10; the score is their average. 
 
 ### Sprint 2, weeks 2–5: ask at the right moment, and give free users a reason to return
 
+**Status, 20 September 2026: #16 and the trial half of #18 shipped together on branch `trial-nurture`**, in a different shape from the rows below. The trial is 3 days with no card (the agent simply works, then sleeps), not a 7-day Stripe trial; it is on for everyone, so compare cohorts before and after rather than reading it as a split test. The nurture sequence follows the trial: the morning digests are the day-1 and day-2 touch, then `trial_ending`, `trial_ended`, `missed_matches` (the probe teaser) and `last_call`. Guardrail to watch: research cost per activation, since a trial costs up to four runs per signup. #14, #15, #17 and the annual price are not done.
+
 | # | Initiative | ICE | Effort | Where / reuse | Metric |
 |---|---|---|---|---|---|
 | 14 | **Paywall after the aha (v1 #8).** After the first `reply_clicked` or contacted: an inline card, "That's one conversation started. Your agent can bring you new ones every morning." Gate the in-feed card on contacted ≥ 1 or list finished, not on `rows.length > 2`. Add the button to "You have worked through your list". | 8·7·8 = 7.7 | S | `desk-app.tsx:280-329,426,600-662`; placements `after_contact`, `list_done` | Contacted → checkout, by placement |

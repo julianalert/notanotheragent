@@ -1,3 +1,4 @@
+import { TRIAL_DAYS } from '@/lib/trial'
 import { Faq, FAQsTwoColumnAccordion } from '@/components/sections/faqs-two-column-accordion'
 
 export function SiteFaq() {
@@ -5,14 +6,15 @@ export function SiteFaq() {
     <FAQsTwoColumnAccordion
       id="faq"
       headline="Questions & answers"
-      subheadline={<p>How the free first search and the paid agent work.</p>}
+      subheadline={<p>How the free trial and the paid agent work.</p>}
     >
       <Faq
         question="What does it cost?"
         answer={
           <p>
-            Your first search is free: you see every lead, source and message. Keeping the agent running is $99 a
-            month, billed by card through Stripe, and you can cancel any time from your private page.
+            The first {TRIAL_DAYS} days are free, with no card: a full first search, then a new one every morning, and you see every
+            lead, source and message. After that the agent sleeps and your leads stay on your private page. Keeping it
+            running is $99 a month, billed by card through Stripe, and you can cancel any time from your private page.
           </p>
         }
       />

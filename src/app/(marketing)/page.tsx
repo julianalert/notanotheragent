@@ -18,6 +18,7 @@ import { LeadCarousel } from './lead-carousel'
 import { Pricing } from './pricing'
 import { SiteNavbar } from './site-chrome'
 import { SiteFaq } from './site-faq'
+import { TRIAL_DAYS } from '@/lib/trial'
 import { WebsiteForm } from './website-form'
 
 // `?website=` prefills the form: every variant is the same page.
@@ -162,7 +163,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ w
         <SiteFaq />
 
         <CallToActionSimple
-          eyebrow="First search free · No account · No card"
+          eyebrow={`Free for ${TRIAL_DAYS} days · No account · No card`}
           headline="See who is asking for what you sell this week."
           subheadline={<p>Enter your website and your email. Your first leads usually arrive within minutes.</p>}
           cta={<WebsiteForm />}
