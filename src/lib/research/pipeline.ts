@@ -224,8 +224,13 @@ const TRIAGE_RETRY_PAUSE_MS = 15_000
  * are confirmed (and shown) while the rest are still being judged, and the whole step takes as long as one batch.
  */
 const QUALIFY_BATCH_SIZE = 5
-/** Pages read through hosted browsing per run (each is a small model call). */
-const MAX_BROWSER_READS = 8
+/**
+ * Pages read through hosted browsing per run (each is a small model call). Reddit can only be read this way, and
+ * for buyers who post there it is most of the run: eight starved it.
+ */
+const MAX_BROWSER_READS = 16
+// Two rounds at most, so the slowest case stays inside the step's time budget.
+const BROWSER_READ_CONCURRENCY = 8
 
 function log(event: string, details: Record<string, unknown>) {
   console.log(JSON.stringify({ at: new Date().toISOString(), event, ...details }))
@@ -479,6 +484,7 @@ async function stepBrief(state: PipelineState) {
     seed: Math.floor(Date.parse(input.now_utc) / DAY_MS),
     plannedQueries: planned,
     untriedAngles: input.untried_angles,
+    searchedQueries: input.previous_queries,
     priorityTopics: state.priorityTopics,
     deadTopics: state.deadTopics,
   })
@@ -554,6 +560,7 @@ async function stepTriage(state: PipelineState) {
             id,
             url: hit.url,
             title: hit.title,
+            community: hit.community,
             date: hit.publishedDate,
             preview: (hit.text ?? hit.snippet).slice(0, 800),
           })),
@@ -660,7 +667,7 @@ async function stepRead(state: PipelineState) {
   if (forBrowser.length && process.env.OPENAI_API_KEY) {
     let cursor = 0
     await Promise.all(
-      Array.from({ length: Math.min(4, forBrowser.length) }, async () => {
+      Array.from({ length: Math.min(BROWSER_READ_CONCURRENCY, forBrowser.length) }, async () => {
         while (cursor < forBrowser.length) {
           const source = forBrowser[cursor++]
           const read = await readWithOpenAI(source.url, SOURCE_PAGE_CHARS)

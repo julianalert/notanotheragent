@@ -28,6 +28,24 @@ shows it: title, author or handle, the posting date or relative time shown, the 
 comments with each commenter's handle and, when shown, the comment permalink. Do not summarise, judge or add
 anything. If the page cannot be opened, reply with exactly: UNAVAILABLE.`
 
+/** A Reddit post's URL carries its title: /r/<subreddit>/comments/<id>/<title_in_words>/. */
+export function redditTitleFromUrl(url: string) {
+  const slug = url.match(/reddit\.com\/r\/[^/]+\/comments\/[a-z0-9]+\/([^/?#]+)/i)?.[1]
+  if (!slug) return ''
+  try {
+    return decodeURIComponent(slug).replace(/_/g, ' ').trim()
+  } catch {
+    return slug.replace(/_/g, ' ').trim()
+  }
+}
+
+/** The model writes URLs slightly differently from the tool audit (www, old., trailing slash, query): match on the post. */
+function hitKey(url: string) {
+  const reddit = url.match(/reddit\.com\/r\/[^/]+\/comments\/([a-z0-9]+)/i)
+  if (reddit) return `reddit:${reddit[1].toLowerCase()}`
+  return url.replace(/^https?:\/\/(www\.)?/i, '').replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase()
+}
+
 let client: OpenAI | null = null
 const openai = () => (client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 0, timeout: 60_000 }))
 
@@ -57,18 +75,22 @@ export async function searchOpenAI(request: SearchRequest, options: { focus?: 'r
     const lines = new Map<string, { date: string | null; summary: string }>()
     for (const line of audit.text.split('\n')) {
       const match = line.match(/(https?:\/\/\S+)\s*\|\s*([^|]*)\|\s*(.*)$/)
-      if (match) lines.set(match[1].replace(/[),.]+$/, ''), { date: isoDayOf(match[2].trim()), summary: match[3].trim() })
+      if (match) lines.set(hitKey(match[1].replace(/[),.]+$/, '')), { date: isoDayOf(match[2].trim()), summary: match[3].trim() })
     }
     const seen = new Set<string>()
     const hits = audit.urls
-      .filter((url) => !seen.has(url) && seen.add(url))
+      .filter((url) => !seen.has(hitKey(url)) && seen.add(hitKey(url)))
       .filter((url) => options.focus !== 'reddit' || /reddit\.com\/r\/[^/]+\/comments\//i.test(url))
+      // The posts the model picked out (they have a line) first: the list is cut below, and merged in order.
+      .sort((a, b) => Number(lines.has(hitKey(b))) - Number(lines.has(hitKey(a))))
       .slice(0, request.limit * 2)
       .map((url) => {
-        const line = lines.get(url)
+        const line = lines.get(hitKey(url))
         return {
           url,
-          title: '',
+          // Most URLs the tool saw get no line from the model. A Reddit URL still says what the post is about;
+          // without it triage sees an empty hit and scores it 0, whatever the post says.
+          title: redditTitleFromUrl(url),
           snippet: line?.summary ?? '',
           text: null,
           publishedDate: line?.date ?? null,

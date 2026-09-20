@@ -602,7 +602,20 @@ describe('research-v3 pipeline rules', () => {
     expect(new Set(day1.map((topic) => topic.angle))).toEqual(new Set(['untried', 'request', 'problem', 'trigger']))
     const day2 = deriveTopics({ brief, mode: 'watch', seed: 2 })
     expect(day2).toHaveLength(6)
-    expect(day2[0].query).not.toBe(deriveTopics({ brief, mode: 'watch', seed: 1 })[0].query)
+    // The head of every list is searched by every run; what follows rotates with the seed.
+    const heads = [brief.explicit_requests[0], brief.buyer_problems_in_their_words[0], brief.trigger_situations[0]]
+    const day1Watch = deriveTopics({ brief, mode: 'watch', seed: 1 })
+    expect(day2.slice(0, 3).map((topic) => topic.query)).toEqual(heads)
+    expect(day1Watch.slice(0, 3).map((topic) => topic.query)).toEqual(heads)
+    expect(day2[3].query).not.toBe(day1Watch[3].query)
+    // A follow-up starts with what the run before it did not search, even when that is a list's head.
+    const followUp = deriveTopics({ brief, mode: 'follow_up', seed: 3, searchedQueries: ['exa: referrals dried up', 'openai: lost our biggest client', 'cold outreach gets no replies'] })
+    expect(followUp[0].query).toBe('how do you find clients')
+    expect(followUp.slice(-3).map((topic) => topic.query).sort()).toEqual(['cold outreach gets no replies', 'lost our biggest client', 'referrals dried up'])
+    // A first search takes the lists in order whatever the day: the headline situations are never rotated away.
+    for (const seed of [0, 5, 11]) {
+      expect(deriveTopics({ brief, mode: 'initial', seed, plannedQueries: ['agency needs more clients'] }).slice(0, 4).map((topic) => topic.query)).toEqual(['agency needs more clients', ...heads])
+    }
     // Duplicates and empty strings are dropped.
     expect(deriveTopics({ brief: { ...brief, explicit_requests: ['referrals dried up', ''] }, mode: 'initial', seed: 0 }).map((t) => t.query)).not.toContain('')
   })

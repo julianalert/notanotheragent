@@ -9,7 +9,7 @@ export const RESEARCH_MODEL = 'gpt-5.5-2026-04-23'
 // v2.2: cost budget: medium reasoning, hard tool-call cap stated in the prompt, capped exclusion list.
 // v3: app-controlled discovery pipeline (search, triage, read, qualify as separate steps); trigger_event intent;
 // needs may match documented problems solved, not only service names.
-export const PROMPT_VERSION = 'research-v3.1'
+export const PROMPT_VERSION = 'research-v3.2'
 export const SCHEMA_NAME = 'lead_research_v3'
 export const SCHEMA_VERSION = '3'
 // Room for the acquisition brief and a pool of up to 15 candidates on top of high reasoning.
@@ -39,7 +39,8 @@ export const SEARCH_MODEL = 'gpt-5-mini'
 /** Buyer situations from the acquisition brief searched per run, one search per connector each. */
 export const SEARCH_TOPICS = { initial: 12, daily: 12, follow_up: 8, watch: 6 } as const
 /** Search results read in full and handed to the qualification request. */
-export const MAX_SOURCES_TO_READ = { initial: 15, daily: 15, follow_up: 12, watch: 6 } as const
+// A first search reads more: it decides whether the visitor stays, and its pool holds more promising posts than 15.
+export const MAX_SOURCES_TO_READ = { initial: 20, daily: 15, follow_up: 12, watch: 6 } as const
 /** Results requested per connector and topic. */
 export const RESULTS_PER_SEARCH = 10
 /** Search hits kept after deduplication, before triage (triage reads previews only, so this is cheap). */
@@ -56,7 +57,7 @@ export const WEBSITE_PAGE_CHARS = 8000
 /** Leads shown to the user per run. */
 export const TARGET_COUNT = 5
 /** Candidates the model may return per run (qualified, rejected and unresolved together). */
-export const MAX_CANDIDATES = 15
+export const MAX_CANDIDATES = 20
 
 // Structured result contract. Every object strict, every key required, nulls for unknowns.
 const S = z.string()

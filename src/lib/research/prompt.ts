@@ -103,6 +103,10 @@ const BRIEF_RULES = `Fill profile.acquisition_brief. These are search hypotheses
 - not_our_buyer: who must not be treated as a buyer.
 - buyer_seller_confusions: common mix-ups to avoid.
 - geography and languages: stated, inferred or unknown.
+Order buyer_problems_in_their_words, explicit_requests and trigger_situations from the most common to the
+narrowest: first the headline situation most of these buyers are in and would post about (the outcome they
+want or what is not working, in their plainest words), then the more specific variants, and only last the
+ones that name this kind of product. The application searches the first entries of each list in every run.
 Distinguish the business's customer from that customer's customer. If the business serves agencies,
 freelancers, creators, consultants or other businesses that themselves have clients, its buyer is that
 operator, not the operator's clients. A company asking to hire a provider in the operator's field is the
@@ -268,7 +272,7 @@ ${BRIEF_RULES}
 search_plan.angles: the distinct buyer situations worth searching. search_plan.proposed_queries: 12 to 16
 short searches (3 to 9 words) in the buyers' own words and languages, the way the buyer would type the
 question or complaint into a community's search box: explicit requests, first-person problems and trigger
-situations in roughly equal measure. One idea per query, no site: restrictions, no quotation marks, no month
+situations in roughly equal measure, the most common situation first. One idea per query, no site: restrictions, no quotation marks, no month
 names, years or "posted" terms, no full sentences.
 
 OUTPUT
@@ -279,7 +283,7 @@ profile (null only for website_unreadable) and search_plan. Write in ${WEBSITE_L
 /** Step 3: score search hits from their title and snippet only. */
 export const TRIAGE_PROMPT = `You triage search results for a sales research agent. The input JSON contains an acquisition brief (what the
 business sells, who buys it, how those buyers talk, who is not a buyer), the user's focus guidance when any,
-feedback on earlier leads, and a list of hits with id, url, title, date and a text preview. ${TRUST_RULES}
+feedback on earlier leads, and a list of hits with id, url, title, community, date and a text preview. ${TRUST_RULES}
 ${FEEDBACK_RULES}
 
 Only original posts written by a person or organisation about their own situation can score above 0: a
@@ -294,6 +298,11 @@ Score every hit from 0 to 3:
    trigger situation from the brief.
 3: clearly the buyer with a concrete current need or explicit request the offer addresses.
 Judge the author's role and goal, not whether they name the product category. Give a short reason each.
+Some hits, Reddit posts above all, come with a title and a community but no preview. That is not a reason to
+score 0: a thread URL in a community of these buyers is an original post. Judge it from its title and
+community: when the title reads like the buyer's own question, goal or problem, score 2 (1 when it could go
+either way) so that the post gets read; score 0 only when the title or community shows it is off-topic,
+someone offering help or selling, or a general discussion.
 Return one score per hit id. Return only the schema-conforming result.`
 
 /** Step 5: qualify from the full text of sources the application read. No tools. */
@@ -461,10 +470,16 @@ export const EXPLOIT_SHARE = 0.7
 
 /**
  * Buyer situations to search this run, in the buyers' words, from the acquisition brief. Untried angles (from a
- * previous run) go first, then topics that produced leads before (up to EXPLOIT_SHARE of the run), then a rotation
- * over explicit requests, first-person problems, trigger situations and planned queries. `seed` rotates the
- * starting point so consecutive runs do not repeat the same subset. Dead topics (tried repeatedly, never a
- * candidate) are skipped.
+ * previous run) go first, then topics that produced leads before (up to EXPLOIT_SHARE of the run), then the
+ * brief's own lists: planned queries, explicit requests, first-person problems and trigger situations.
+ *
+ * Each list is written most important first: its head is the buyer's headline situation ("I have followers but
+ * I'm not making money from them"), its tail the narrower variants ("my course has been almost done forever").
+ * So the head of every list is searched by every run, and a first search takes the lists in order. Only what
+ * follows the heads is rotated by `seed`, so consecutive daily runs explore different variants; a follow-up
+ * takes the lists in order and leaves what the run before it searched for last. (Rotating everything once started a first search in the middle of the
+ * lists: twelve narrow searches, none on the headline need, and an empty result.) Dead topics (tried
+ * repeatedly, never a candidate) are skipped.
  */
 export function deriveTopics(args: {
   brief: AcquisitionBriefT
@@ -474,6 +489,8 @@ export function deriveTopics(args: {
   untriedAngles?: string[]
   priorityTopics?: string[]
   deadTopics?: string[]
+  /** Follow-ups: what the previous run searched ("exa: query" or plain), so this one starts with the rest. */
+  searchedQueries?: string[]
 }): SearchTopic[] {
   const limit = SEARCH_TOPICS[args.mode]
   const make = (angle: TopicAngle, items: string[] | undefined): SearchTopic[] =>
@@ -485,14 +502,25 @@ export function deriveTopics(args: {
   const untried = make('untried', args.untriedAngles)
   const priority = make('proven', args.priorityTopics).slice(0, Math.floor(limit * EXPLOIT_SHARE))
   // Planned queries are written as searches; brief items are descriptions and come after them.
-  const pool = interleave([
+  const lists = [
     make('planned', args.plannedQueries),
     make('request', args.brief.explicit_requests),
     make('problem', args.brief.buyer_problems_in_their_words),
     make('trigger', args.brief.trigger_situations),
-  ])
+  ]
+  const heads = interleave(lists.map((list) => list.slice(0, 1)))
+  const tails = interleave(lists.map((list) => list.slice(1)))
+  // A follow-up takes the lists in order too, but what the run before it already searched goes last.
+  const searched = new Set((args.searchedQueries ?? []).map((query) => query.replace(/^[a-z]+:\s+/i, '').trim().toLowerCase()))
+  const inOrder = [...heads, ...tails]
+  const ordered =
+    args.mode === 'initial'
+      ? inOrder
+      : args.mode === 'follow_up'
+        ? [...inOrder.filter((topic) => !searched.has(topic.query.toLowerCase())), ...inOrder.filter((topic) => searched.has(topic.query.toLowerCase()))]
+        : [...heads, ...rotate(tails, args.seed)]
   const seen = new Set<string>()
-  const distinct = [...untried, ...priority, ...rotate(pool, args.seed)].filter((topic) => {
+  const distinct = [...untried, ...priority, ...ordered].filter((topic) => {
     const key = topic.query.toLowerCase()
     if (seen.has(key) || (dead.has(key) && topic.angle !== 'untried')) return false
     seen.add(key)
