@@ -5,6 +5,7 @@ import { appUrl } from '../site'
 import type { LeadT, RunOutcome } from '../research/contract'
 import { emailConfigured, sendEmail } from './resend'
 import { renderRunEmail } from './templates'
+import { RERUN_KEY } from '../research/contract'
 
 const MAX_ATTEMPTS = 3
 const MAX_PER_TICK = 20
@@ -18,6 +19,7 @@ type ClaimedRun = {
   id: string
   radar_id: string
   kind: 'initial' | 'daily' | 'follow_up' | 'watch'
+  run_key: string
   plan: 'free' | 'active' | 'past_due' | 'cancelled'
   parent_kind: 'initial' | 'daily' | null
   outcome: RunOutcome
@@ -60,7 +62,7 @@ export async function sendPendingEmails() {
          limit 1
          for update of rr2 skip locked
        ) and r.id = rr.radar_id
-       returning rr.id, rr.radar_id, rr.kind, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext, r.plan,
+       returning rr.id, rr.radar_id, rr.kind, rr.run_key, rr.outcome, rr.email_attempts, r.email, r.token_ciphertext, r.plan,
          (select p.kind from research_runs p where p.id = rr.parent_run_id) as parent_kind,
          r.website_host, r.profile->>'name' as business_name, r.research_ends_at`,
     )
@@ -87,8 +89,9 @@ async function deliver(run: ClaimedRun) {
   const unsubscribeUrl = `${appUrl()}/api/unsubscribe/${unsubscribeCode(run.radar_id)}`
 
   // A follow-up after the initial run sends the "first results" email that the initial run deferred.
-  const emailKind: 'initial' | 'daily' | 'instant' =
-    run.kind === 'watch' ? 'instant' : run.kind === 'follow_up' ? (run.parent_kind ?? 'daily') : run.kind
+  // The one free second search (run_key 'rerun') has its own wording and, like a digest, is silent when empty.
+  const emailKind: 'initial' | 'daily' | 'instant' | 'rerun' =
+    run.kind === 'watch' ? 'instant' : run.run_key === RERUN_KEY ? 'rerun' : run.kind === 'follow_up' ? (run.parent_kind ?? 'daily') : run.kind
   if (emailKind !== 'initial' && !leads.length) {
     await finish(run.id, 'skipped', 'nothing new to email')
     return

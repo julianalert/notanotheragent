@@ -1,46 +1,93 @@
 'use client'
 
 import type { RadarView, RunView } from '@/lib/radars'
-import { useEffect, useState, type FormEvent } from 'react'
+import type { RunProgress } from '@/lib/research/provider'
+import { useState, type FormEvent } from 'react'
 import { DeskEmailForm, DeskWebsiteForm } from './forms'
 import { minutesAgo, relativeMoment } from './lib'
 
 /* ------------------------------ Searching ------------------------------- */
 
 /**
- * The research backend only reports two in-progress states (running, processing), which
- * would make for a very static screen on a run that takes a minute or more. So the
- * "running" state is presented as three steps here, and Searching below fakes movement
- * through them on a timer — cosmetic only, not read from anywhere else.
+ * The waiting page follows the run's real steps. The discovery pipeline reports which step it is on and what the
+ * finished ones produced (pages read, posts found, posts worth reading); those numbers are shown as they arrive.
+ * Inside a step the bar eases towards the step's end from the time the step really started, so it keeps moving
+ * without claiming work that hasn't happened. Providers that can't report steps get the plain three-state version.
  */
 export const STEPS = [
-  { label: 'Website received', detail: 'Your research job is saved. You can close this tab.' },
-  { label: 'Reading your website', detail: 'Understanding what you sell, who you serve and how you talk about it.' },
-  { label: 'Searching for buying signals', detail: 'Scanning public posts and requests for people who need this right now.' },
-  { label: 'Matching signals to your services', detail: 'Comparing what we found against your offer to keep only real fits.' },
-  { label: 'Checking every claim against its source', detail: 'Opening sources, checking dates, removing duplicates and preparing first messages.' },
-  { label: 'Your leads are ready', detail: 'Opening your results.' },
+  { label: 'Website received' },
+  { label: 'Reading your website' },
+  { label: 'Searching for buying signals' },
+  { label: 'Sorting buyers from noise' },
+  { label: 'Reading the most promising posts' },
+  { label: 'Checking every claim against its source' },
+  { label: 'Your leads are ready' },
 ]
 
-const RUNNING_SUBSTEPS = 3
-const PERCENT_BY_ACTIVE: Record<number, number> = { 1: 10, 2: 28, 3: 46, 4: 75, 6: 100 }
+const STEP_INDEX: Record<RunProgress['step'], number> = { brief: 1, search: 2, triage: 3, read: 4, qualify: 5 }
+/** Where each step starts on the bar, and how long it usually takes (seconds) for the easing inside it. */
+const BAR_START = [0, 4, 16, 32, 44, 58, 100]
+const TYPICAL_SECONDS = [5, 45, 25, 30, 45, 150, 1]
 
-/** Observable backend states only; the running sub-steps are faked on top of this in Searching. */
-export function stageFor(run: RunView | null): { active: number; percent: number } {
-  switch (run?.status) {
-    case 'running':
-      return { active: 1, percent: PERCENT_BY_ACTIVE[1] }
-    case 'processing':
-      return { active: 4, percent: PERCENT_BY_ACTIVE[4] }
-    case 'completed':
-      return { active: 6, percent: PERCENT_BY_ACTIVE[6] }
+export function stageFor(run: RunView | null): { active: number } {
+  if (run?.status === 'completed') return { active: STEPS.length }
+  if (run?.status === 'processing') return { active: 5 }
+  if (run?.status === 'running') return { active: run.progress ? STEP_INDEX[run.progress.step] : 2 }
+  return { active: 0 }
+}
+
+function barPercent(run: RunView | null, active: number, now: number) {
+  if (active >= STEPS.length) return 100
+  const from = BAR_START[active]
+  const to = active === 5 ? 96 : BAR_START[active + 1]
+  const since = run?.progress?.stepStartedAt ?? run?.startedAt ?? run?.createdAt
+  const elapsed = since ? Math.max(0, (now - Date.parse(since)) / 1000) : 0
+  let share = 1 - Math.exp(-elapsed / TYPICAL_SECONDS[active])
+  // Qualification runs in groups: each finished group is real progress.
+  const batches = run?.progress?.batches
+  if (active === 5 && batches?.total) share = Math.max(share * 0.9, batches.done / batches.total)
+  return Math.round(from + (to - from) * Math.min(share, 0.97))
+}
+
+const count = (value: number, one: string, many: string) => `${value} ${value === 1 ? one : many}`
+
+/** What the current step is doing, with what the finished steps found. */
+function stepDetail(active: number, host: string, progress: RunProgress | null) {
+  const pages = progress?.websitePages
+  const hits = progress?.hits
+  const sources = progress?.sources
+  switch (active) {
+    case 0:
+      return 'Your search is saved and starts in a moment.'
+    case 1:
+      return `Reading ${host} to understand what you sell, who you serve and how you talk about it.`
+    case 2:
+      return `${pages ? `Read ${count(pages, 'page', 'pages')} of your site. ` : ''}Scanning public posts and requests for people who need this right now.`
+    case 3:
+      return `${hits ? `Found ${count(hits, 'post', 'posts')}. ` : ''}Setting aside sellers, job ads and anything off-topic.`
+    case 4:
+      return `${sources ? `${count(sources, 'post looks', 'posts look')} like a real buyer. ` : ''}Opening each one to read it in full.`
+    case 5: {
+      const groups = progress?.batches && progress.batches.total > 1 ? ` ${progress.batches.done} of ${progress.batches.total} groups checked.` : ''
+      return `${sources ? `Read ${count(sources, 'post', 'posts')} in full. ` : ''}Checking dates, authors and fit, and writing your first messages. This is the longest step, usually two to four minutes.${groups}`
+    }
     default:
-      return { active: 1, percent: PERCENT_BY_ACTIVE[1] }
+      return 'Opening your results.'
   }
+}
+
+/** A finished step says what it produced, when the run reported it. */
+function stepFact(index: number, progress: RunProgress | null) {
+  if (!progress) return null
+  if (index === 1 && progress.websitePages) return `${count(progress.websitePages, 'page', 'pages')} read`
+  if (index === 2 && progress.hits) return `${count(progress.hits, 'post', 'posts')} found`
+  if (index === 4 && progress.sources) return `${progress.sources} read in full`
+  return null
 }
 
 export function Searching({
   run,
+  host,
   now,
   slow,
   expired,
@@ -49,6 +96,7 @@ export function Searching({
   onRetry,
 }: {
   run: RunView | null
+  host: string
   now: number
   slow: boolean
   expired: boolean
@@ -57,37 +105,24 @@ export function Searching({
   onRetry: () => void
 }) {
   const failed = run?.status === 'failed' || run?.status === 'cancelled'
-
-  // Fake movement through the "researching" sub-steps so a run that takes a while still
-  // feels like it's advancing; resets whenever the run isn't in that state, or is a new run.
-  const [subStep, setSubStep] = useState(0)
-  useEffect(() => {
-    if (run?.status !== 'running') {
-      setSubStep(0)
-      return
-    }
-    const id = setInterval(() => setSubStep((step) => Math.min(step + 1, RUNNING_SUBSTEPS - 1)), 5000)
-    return () => clearInterval(id)
-  }, [run?.status, run?.id])
-
-  const base = stageFor(run)
-  const active = run?.status === 'running' ? base.active + subStep : base.active
-  const percent = run?.status === 'running' ? PERCENT_BY_ACTIVE[base.active + subStep] : base.percent
+  const { active } = stageFor(run)
+  const percent = failed ? BAR_START[Math.min(active, 5)] : barPercent(run, active, now)
+  const current = Math.min(active, STEPS.length - 1)
   const stepNumber = Math.min(active + 1, STEPS.length)
 
-  let helper = STEPS[Math.min(active, STEPS.length - 1)].detail
+  let helper = stepDetail(active, host, run?.progress ?? null)
   if (run?.retrying) helper = 'The research provider had a temporary problem. We’re retrying automatically.'
-  else if (slow && active < STEPS.length - 2) helper = 'Still researching. You can close this tab: we’ll email you when your leads are ready.'
+  else if (slow && active < 5 && !run?.progress) helper = 'Still researching. It can take up to ten minutes.'
 
   return (
     <>
       <div className="focus-status" role="status">
         {!failed && <span className="spinner" aria-hidden="true" />}
-        <span>{failed ? 'Research stopped' : STEPS[Math.min(active, STEPS.length - 1)].label}</span>
+        <span>{failed ? 'Research stopped' : STEPS[current].label}</span>
       </div>
       <div className="run">
         <div className="run__top">
-          <b>{failed ? ' ' : active >= STEPS.length ? 'Done' : `Step ${stepNumber} of ${STEPS.length}`}</b>
+          <b>{failed ? ' ' : active >= STEPS.length ? 'Done' : `Step ${stepNumber} of ${STEPS.length}`}</b>
           <span>
             {percent}%{run && !failed && ` — ${minutesAgo(run.createdAt, now)}`}
           </span>
@@ -105,9 +140,10 @@ export function Searching({
         <ol>
           {STEPS.map((step, index) => {
             const done = index < active
-            const current = index === active
-            const errored = failed && current
-            const className = done ? 'done' : errored ? 'failed' : current ? 'now' : 'todo'
+            const isCurrent = index === current && !done
+            const errored = failed && isCurrent
+            const className = done ? 'done' : errored ? 'failed' : isCurrent ? 'now' : 'todo'
+            const fact = done ? stepFact(index, run?.progress ?? null) : null
             return (
               <li key={step.label} className={className}>
                 <span className="dot" aria-hidden="true">
@@ -115,10 +151,11 @@ export function Searching({
                 </span>
                 <div>
                   <b>
-                    <span className="sr-only">{done ? 'Completed: ' : errored ? 'Failed: ' : current ? 'In progress: ' : 'Pending: '}</span>
+                    <span className="sr-only">{done ? 'Completed: ' : errored ? 'Failed: ' : isCurrent ? 'In progress: ' : 'Pending: '}</span>
                     {step.label}
+                    {fact && <span className="run__fact">{fact}</span>}
                   </b>
-                  {current && !errored && <p>{helper}</p>}
+                  {isCurrent && !errored && <p>{helper}</p>}
                   {errored && (
                     <>
                       <p>
@@ -148,13 +185,79 @@ export function Searching({
           })}
         </ol>
       </div>
-      {!failed && (
-        <p className="focus-note">
-          <span aria-hidden="true">💌</span>
-          Feel free to close this tab. We’ll email you the moment your first leads are ready.
-        </p>
-      )}
     </>
+  )
+}
+
+/* ------------------------------ Understood ------------------------------ */
+
+/**
+ * Shown during the wait as soon as the website has been read: what the search understood, and a way to correct it
+ * before the results arrive. Most wrong first results come from a wrong reading of the business.
+ */
+export function Understood({ view, onAdjust }: { view: RadarView; onAdjust: () => void }) {
+  if (!view.brief) return null
+  const services = view.focusSelection?.services.length ? view.focusSelection.services : view.profileServices
+  return (
+    <section className="understood" aria-label="What we understood about your business">
+      <h2>Here’s what we understood</h2>
+      <dl>
+        <div>
+          <dt>You sell</dt>
+          <dd>{view.brief.sells}</dd>
+        </div>
+        {view.brief.buyers.length > 0 && (
+          <div>
+            <dt>Your buyers</dt>
+            <dd>{view.brief.buyers.join(' · ')}</dd>
+          </div>
+        )}
+        {services.length > 0 && (
+          <div>
+            <dt>We’re searching for</dt>
+            <dd>{services.slice(0, 5).join(' · ')}</dd>
+          </div>
+        )}
+        {(view.focusSelection?.wanted || view.focusSelection?.avoid) && (
+          <div>
+            <dt>Your guidance</dt>
+            <dd>
+              {[view.focusSelection.wanted && `Want: ${view.focusSelection.wanted}`, view.focusSelection.avoid && `Skip: ${view.focusSelection.avoid}`]
+                .filter(Boolean)
+                .join(' · ')}
+            </dd>
+          </div>
+        )}
+      </dl>
+      <p>
+        Not quite right?{' '}
+        <button type="button" className="link" onClick={onAdjust}>
+          Correct it now
+        </button>
+        . Your service choices filter this search’s results, and you get one free second search with all your corrections.
+      </p>
+    </section>
+  )
+}
+
+/** Under the progress: how to get back, since there is no account. */
+export function WaitFooter({ emailMasked, linkCopied, onCopyLink }: { emailMasked: string | null; linkCopied: boolean; onCopyLink: () => void }) {
+  return (
+    <div className="focus-note">
+      <span aria-hidden="true">💌</span>
+      <div>
+        <p>
+          You can close this tab: we’ll email {emailMasked ?? 'you'} the moment your first leads are ready. The first ones usually show up
+          here before the search ends.
+        </p>
+        <p>
+          There’s no account, so this page’s link is your way back.{' '}
+          <button type="button" className="link" onClick={onCopyLink}>
+            {linkCopied ? 'Link copied' : 'Copy my private link'}
+          </button>
+        </p>
+      </div>
+    </div>
   )
 }
 
@@ -192,23 +295,67 @@ const EMPTY_COPY: Record<string, { title: string; body: string }> = {
   },
 }
 
-export function NoResults({ view, onActivate, activating }: { view: RadarView; onActivate: () => void; activating: boolean }) {
+/** The one free second search, offered where it helps: an empty first search, or a focus corrected since. */
+export function RerunOffer({ view, busy, onRerun, onAdjust }: { view: RadarView; busy: boolean; onRerun: () => void; onAdjust: (() => void) | null }) {
+  if (!view.rerun.available) return null
+  const empty = view.rerun.reason === 'no_leads'
+  return (
+    <div className="rerun">
+      <div>
+        <p className="rerun__title">{empty ? 'Search again, free' : 'Search again with your corrections, free'}</p>
+        <p className="rerun__text">
+          {empty
+            ? 'One more search is on us. It looks at the same period from different angles. Tell us first who you want and who to skip, and it will use that.'
+            : 'Your focus changed since the last search. One more search is on us, using it.'}
+        </p>
+      </div>
+      <div className="rerun__side">
+        <button type="button" className="btn btn--brand btn--sm" onClick={onRerun} disabled={busy}>
+          {busy ? 'Starting…' : 'Search again'}
+        </button>
+        {onAdjust && (
+          <button type="button" className="btn btn--quiet btn--sm" onClick={onAdjust} disabled={busy}>
+            Adjust my research first
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export function NoResults({
+  view,
+  onActivate,
+  activating,
+  rerunning,
+  onRerun,
+  onAdjust,
+}: {
+  view: RadarView
+  onActivate: () => void
+  activating: boolean
+  rerunning: boolean
+  onRerun: () => void
+  onAdjust: () => void
+}) {
   const followUp = view.followUpRun
   const followUpRunning = followUp && ['queued', 'running', 'processing'].includes(followUp.status)
   const latest = followUp?.status === 'completed' ? followUp : view.initialRun
   const copy = EMPTY_COPY[latest?.outcome ?? 'no_candidates'] ?? EMPTY_COPY.no_candidates
   return (
     <div className="blank">
-      <h2>{followUpRunning ? 'Checking more angles' : copy.title}</h2>
+      <h2>{followUpRunning ? 'Searching again' : copy.title}</h2>
       {followUpRunning ? (
         <p>
-          The first search didn’t find enough verified leads, so we’re running one more search with different angles
-          {view.initialRun?.unresolved ? ' and checking the possible matches we couldn’t verify' : ''}. This page updates
-          when it’s done.
+          We’re running one more search with different angles{view.focusSelection ? ' and your corrections' : ''}
+          {view.initialRun?.unresolved ? ', and checking the possible matches we couldn’t verify' : ''}.{' '}
+          {followUp?.progress ? `${STEPS[stageFor(followUp).active]?.label ?? 'Working'}. ` : ''}This page updates when it’s done
+          {view.emailUnsubscribed ? '.' : ', and we’ll email you if it finds something.'}
         </p>
       ) : (
         <p>{copy.body}</p>
       )}
+      {!followUpRunning && <RerunOffer view={view} busy={rerunning} onRerun={onRerun} onAdjust={onAdjust} />}
       {view.agentLive && !followUpRunning && (
         <p>
           Your agent searches again every morning and watches your buyers’ communities through the day
@@ -226,10 +373,6 @@ export function NoResults({ view, onActivate, activating }: { view: RadarView; o
           )}
         </p>
       )}
-      <p style={{ marginTop: 20 }}>
-        If <b>{view.websiteHost}</b> isn’t the page that describes your services, point us at a more specific one.
-      </p>
-      <DeskWebsiteForm placeholder={`${view.websiteHost}/services`} />
       <p className="next">
         {view.lastResearchAt && <>Last searched {relativeMoment(view.lastResearchAt, view.now, view.timezone)}. </>}
         {view.agentLive && view.nextRunAt ? `Next search ${relativeMoment(view.nextRunAt, view.now, view.timezone)}, ${view.timezone}.` : ''}
@@ -274,10 +417,13 @@ export function DeadEnd({ view, kind }: { view: RadarView; kind: 'unreadable' | 
 
 export function FocusEditor({
   view,
+  hint,
   onSave,
   onClose,
 }: {
   view: RadarView
+  /** When the change takes effect: depends on the plan and on whether a search is running. */
+  hint: string
   onSave: (focus: { services: string[]; market: string; wanted: string; avoid: string } | null) => Promise<string | null>
   onClose: () => void
 }) {
@@ -357,7 +503,7 @@ export function FocusEditor({
       </div>
       <p className="form-hint" style={{ marginTop: 0 }}>
         Only services found on your website can be searched. Guidance steers what the agent looks for and accepts; it
-        never adds services your website doesn’t document. Changes apply to the next search.
+        never adds services your website doesn’t document. {hint}
       </p>
       {error && (
         <p role="alert" className="form-error">

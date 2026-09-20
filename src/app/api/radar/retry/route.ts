@@ -11,7 +11,7 @@ export const POST = withErrors(async function postHandler(request: Request) {
   if (new Date() >= new Date(radar.research_ends_at)) {
     return json({ error: 'The time to retry your first search has passed.' }, { status: 409 })
   }
-  if (!rateLimit(`retry:${clientKey(request)}`, config.retryRateLimitPerHour)) {
+  if (!(await rateLimit(`retry:${clientKey(request)}`, config.retryRateLimitPerHour))) {
     return json({ error: 'Too many retries. Please try again later.' }, { status: 429 })
   }
 

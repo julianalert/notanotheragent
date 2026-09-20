@@ -30,9 +30,16 @@ export const mockProvider: ResearchProvider = {
 
   async inspect(responseId): Promise<Inspection> {
     const [, startedAt, encoded] = responseId.split('_')
-    if (Date.now() - Number(startedAt) < DURATION_MS) return { state: 'pending' }
+    const elapsed = Date.now() - Number(startedAt)
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString()) as Payload
     const { result, auditUrls } = sample(payload, Number(startedAt))
+    if (elapsed < DURATION_MS) {
+      // Like the pipeline: the profile once the "website" is read, then the first candidates before the run ends.
+      // Handing the same partial over on every poll is fine: publishing it is idempotent.
+      if (payload.mode !== 'initial' || elapsed < MOCK_STEPS[1].from) return { state: 'pending' }
+      const early = elapsed >= MOCK_STEPS[4].from + 2000 ? result.candidates.slice(0, 2) : []
+      return { state: 'pending', partial: { profile: result.profile, candidates: early, auditUrls, sources: [] } }
+    }
     return {
       state: 'completed',
       text: JSON.stringify(result),
@@ -48,7 +55,30 @@ export const mockProvider: ResearchProvider = {
   },
 
   async cancel() {},
+
+  async progress(responseId) {
+    const elapsed = Date.now() - Number(responseId.split('_')[1])
+    const index = MOCK_STEPS.findLastIndex((step) => elapsed >= step.from)
+    const step = MOCK_STEPS[Math.max(0, index)]
+    return {
+      step: step.name,
+      stepStartedAt: new Date(Number(responseId.split('_')[1]) + step.from).toISOString(),
+      websitePages: index >= 1 ? 6 : null,
+      hits: index >= 2 ? 143 : null,
+      sources: index >= 4 ? 12 : index >= 3 ? 15 : null,
+      batches: index >= 4 ? { done: elapsed >= step.from + 2000 ? 1 : 0, total: 3 } : null,
+    }
+  },
 }
+
+/** The sample run walks through the pipeline's steps on a clock, so the waiting page can be built and checked. */
+const MOCK_STEPS = [
+  { name: 'brief', from: 0 },
+  { name: 'search', from: 3000 },
+  { name: 'triage', from: 6000 },
+  { name: 'read', from: 8000 },
+  { name: 'qualify', from: 10_000 },
+] as const
 
 const NEEDS = [
   ['Looking for an agency to rebuild our B2B marketing website before our Series A', 'explicit_request'],

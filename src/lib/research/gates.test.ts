@@ -291,6 +291,24 @@ describe('qualification rules', () => {
     expect(result.counts.qualified_not_selected).toBe(2)
   })
 
+  it('a run that publishes as it goes only has the rest of its five left', () => {
+    const result = run(Array.from({ length: 4 }, () => makeCandidate()), { maxPublished: 2 })
+    expect(result.counts.published).toBe(2)
+    expect(result.counts.qualified_not_selected).toBe(2)
+    expect(run([makeCandidate()], { maxPublished: 0 }).counts.published).toBe(0)
+  })
+
+  it('leads already published by the run keep their place in the final five, whatever their score', () => {
+    const early = makeCandidate({ score: { intent: 1, service_fit: 2, freshness: 1, contactability: 1 } })
+    const strong = Array.from({ length: 6 }, () => makeCandidate())
+    const earlyKey = sourceKey(early.source_url)!
+    const without = run([early, ...strong])
+    expect(without.published.map((lead) => lead.sourceKey)).not.toContain(earlyKey)
+    const withKeys = run([early, ...strong], { publishedKeys: new Set([earlyKey]) })
+    expect(withKeys.counts.published).toBe(5)
+    expect(withKeys.published.map((lead) => lead.sourceKey)).toContain(earlyKey)
+  })
+
   it('does not republish an existing opportunity', () => {
     const candidate = makeCandidate()
     const prior: PriorOpportunity[] = [

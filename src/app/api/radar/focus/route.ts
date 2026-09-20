@@ -27,7 +27,8 @@ export const PATCH = withErrors(async function patchHandler(request: Request) {
   if (wanted.length > 300 || avoid.length > 300) {
     return json({ error: 'Keep each guidance note under 300 characters.', field: wanted.length > 300 ? 'wanted' : 'avoid' }, { status: 422 })
   }
-  // Applies to future scheduled runs only: no extra search, no deadline change, no services outside the profile.
+  // Never starts a search by itself and never adds services outside the profile. On a sleeping radar the change
+  // earns the one free second search (POST /api/radar/rerun).
   await updateFocus(radar, { services, market: market || null, wanted: wanted || null, avoid: avoid || null })
   return json({ ok: true })
 })

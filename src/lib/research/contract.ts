@@ -30,6 +30,8 @@ export const MAX_EXCLUDED_IN_PROMPT = 40
  * The follow-up signal is still recorded in diagnostics.
  */
 export const AUTOMATIC_FOLLOW_UPS = false
+/** run_key of the one free second search a free radar may ask for (a follow-up of its initial run). */
+export const RERUN_KEY = 'rerun'
 
 /* Pipeline provider (RESEARCH_PROVIDER=pipeline): the application searches and reads; models read each source once. */
 /** Cheap model for the fallback searches and result triage. */

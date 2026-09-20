@@ -19,6 +19,7 @@ export type EventName =
   | 'webhook_saved'
   // Server.
   | 'checkout_started'
+  | 'rerun_requested'
   | 'plan_changed'
   | 'email_opened'
   | 'email_clicked'

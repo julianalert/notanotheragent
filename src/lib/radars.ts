@@ -5,8 +5,8 @@ import { encryptToken, maskEmail } from './crypto'
 import { query } from './db'
 import { toJsonb } from './jsonb'
 import { agentLive, type Plan } from './billing/subscription'
-import type { BusinessProfileT, DismissReason, Focus, LeadT, RunOutcome } from './research/contract'
-import { getProvider } from './research/provider'
+import { RERUN_KEY, type BusinessProfileT, type DismissReason, type Focus, type LeadT, type RunOutcome } from './research/contract'
+import { getProvider, type RunProgress } from './research/provider'
 import { isValidTimeZone, nextDailyRunAt } from './time'
 import { hashToken, isWellFormedToken } from './tokens'
 
@@ -33,6 +33,8 @@ export type RadarRow = {
   current_period_end: Date | null
   last_watch_at: Date | null
   webhook_url: string | null
+  focus_updated_at: Date | null
+  link_sent_at: Date | null
 }
 
 export type RunKind = 'initial' | 'daily' | 'follow_up' | 'watch'
@@ -102,6 +104,8 @@ export type RunView = {
   candidates: number | null
   published: number | null
   unresolved: number | null
+  /** Where a running attempt really is (step and counts). Null when the provider can't tell or nothing is running. */
+  progress: RunProgress | null
 }
 
 export type LeadView = {
@@ -111,6 +115,8 @@ export type LeadView = {
   status: LeadRow['user_status']
   statusAt: string | null
   dismissReason: DismissReason | null
+  /** Published moments ago: “who they are” is still being looked up. */
+  enriching: boolean
   data: LeadT
 }
 
@@ -150,6 +156,13 @@ export type RadarView = {
   watchedSources: Array<{ id: string; kind: WatchedSourceRow['kind']; label: string; enabled: boolean; hits: number; published: number }>
   /** The most recent watch run, when one is in progress or completed today. */
   latestWatchRun: RunView | null
+  /** What the first search understood about the business, as soon as the website has been read. */
+  brief: { sells: string; buyers: string[] } | null
+  /**
+   * The one free second search: offered to a sleeping radar whose first search found nothing, or whose focus changed
+   * since its last search. `used` once it has run, so the page can stop promising "the next search".
+   */
+  rerun: { available: boolean; used: boolean; reason: 'no_leads' | 'focus_changed' | null }
 }
 
 function safeEncrypt(token: string) {
@@ -161,6 +174,12 @@ function safeEncrypt(token: string) {
 }
 
 const iso = (value: Date | string | null | undefined) => (value ? new Date(value).toISOString() : null)
+
+/** Postgres: the column doesn't exist (a migration hasn't been applied yet). */
+const UNDEFINED_COLUMN = '42703'
+
+/** How long a fresh lead is shown as “looking up who they are” before the page stops waiting for it. */
+const ENRICHING_WINDOW_MS = 3 * 60 * 1000
 
 /** Failures a user retry cannot fix. */
 const NOT_USER_RETRYABLE = new Set(['configuration', 'refusal'])
@@ -221,7 +240,7 @@ export async function createRadar(input: {
   return rows[0].radar_id
 }
 
-function toRunView(run: RunRow | undefined, expired: boolean): RunView | null {
+function toRunView(run: RunRow | undefined, expired: boolean, progress: RunProgress | null = null): RunView | null {
   if (!run) return null
   return {
     id: run.id,
@@ -244,6 +263,7 @@ function toRunView(run: RunRow | undefined, expired: boolean): RunView | null {
     candidates: run.candidates,
     published: run.published_count,
     unresolved: run.unresolved_count,
+    progress,
   }
 }
 
@@ -283,6 +303,24 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
   const expired = now.getTime() >= endsAt.getTime()
   const profile = radar.profile
   const lastCompleted = runs.find((run) => run.status === 'completed')
+  const provider = getProvider()
+
+  // Real progress of the attempt in flight, read from the provider's own state (step and counts, never texts).
+  const active = runs.find((run) => (run.status === 'running' || run.status === 'processing') && run.provider_response_id)
+  const progress = active && provider.progress ? await provider.progress(active.provider_response_id!).catch(() => null) : null
+  const runView = (run: RunRow | undefined) => toRunView(run, expired, run && run.id === active?.id ? progress : null)
+
+  // One free second search for a sleeping radar: after an empty first search, or once the focus has changed since
+  // the last search. A failed one may be asked for again.
+  const rerunRun = runs.find((run) => run.kind === 'follow_up' && run.run_key === RERUN_KEY)
+  const rerunUsed = Boolean(rerunRun) && rerunRun!.status !== 'failed' && rerunRun!.status !== 'cancelled'
+  const inProgress = runs.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'processing')
+  const focusChanged = Boolean(
+    radar.focus_updated_at && lastCompleted?.started_at && new Date(radar.focus_updated_at) > new Date(lastCompleted.started_at),
+  )
+  const rerunReason = leads.length === 0 ? ('no_leads' as const) : focusChanged ? ('focus_changed' as const) : null
+  const initialDone = runs.some((run) => run.kind === 'initial' && run.status === 'completed')
+  const rerunAvailable = radar.plan === 'free' && !expired && Boolean(profile) && initialDone && !inProgress && !rerunUsed && rerunReason !== null
 
   const services = radar.focus?.services.length ? radar.focus.services.slice(0, 2).map(label) : values(profile?.services, 2)
   const markets = radar.focus?.market ? [radar.focus.market] : values(profile?.markets, 2)
@@ -308,22 +346,10 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
         }
       : null,
     focusSelection: radar.focus,
-    initialRun: toRunView(
-      runs.find((run) => run.kind === 'initial'),
-      expired,
-    ),
-    latestDailyRun: toRunView(
-      runs.find((run) => run.kind === 'daily'),
-      expired,
-    ),
-    followUpRun: toRunView(
-      runs.find((run) => run.kind === 'follow_up'),
-      expired,
-    ),
-    latestWatchRun: toRunView(
-      runs.find((run) => run.kind === 'watch'),
-      expired,
-    ),
+    initialRun: runView(runs.find((run) => run.kind === 'initial')),
+    latestDailyRun: runView(runs.find((run) => run.kind === 'daily')),
+    followUpRun: runView(runs.find((run) => run.kind === 'follow_up')),
+    latestWatchRun: runView(runs.find((run) => run.kind === 'watch')),
     lastResearchAt: iso(lastCompleted?.completed_at),
     leads: leads.map((lead) => ({
       id: lead.id,
@@ -332,10 +358,11 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
       status: lead.user_status,
       statusAt: iso(lead.user_status_at),
       dismissReason: lead.dismiss_reason,
+      enriching: provider.name !== 'mock' && !('enrichment' in lead.data) && now.getTime() - new Date(lead.discovered_at).getTime() < ENRICHING_WINDOW_MS,
       data: lead.data,
     })),
     slowRunThresholdMs: config.slowRunThresholdMs,
-    sampleData: getProvider().name === 'mock',
+    sampleData: provider.name === 'mock',
     hasEmail: Boolean(radar.email),
     emailMasked: radar.email ? maskEmail(radar.email) : null,
     emailUnsubscribed: Boolean(radar.email_unsubscribed_at),
@@ -346,7 +373,28 @@ export async function getRadarView(radar: RadarRow): Promise<RadarView> {
     priceUsd: config.planPriceUsd,
     billingConfigured: Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID),
     watchedSources: watched.map((source) => ({ id: source.id, kind: source.kind, label: source.label, enabled: source.enabled, hits: source.hits, published: source.published })),
+    brief: profile?.acquisition_brief ? { sells: profile.acquisition_brief.sells, buyers: profile.acquisition_brief.buyers.slice(0, 4) } : null,
+    rerun: { available: rerunAvailable, used: rerunUsed, reason: rerunAvailable ? rerunReason : null },
   }
+}
+
+/** Queue the one free second search (see RadarView.rerun). Eligibility beyond these guards is the caller's job. */
+export async function requestRerun(radarId: string) {
+  const rows = await query<{ id: string }>(
+    `insert into research_runs (radar_id, kind, run_key, status, scheduled_at, parent_run_id)
+     select rr.radar_id, 'follow_up', $2, 'queued', now(), rr.id
+     from research_runs rr join radars r on r.id = rr.radar_id
+     where rr.radar_id = $1 and rr.kind = 'initial' and rr.status = 'completed'
+       and r.plan = 'free' and r.profile is not null and r.research_ends_at > now()
+       and not exists (select 1 from research_runs busy where busy.radar_id = $1 and busy.status in ('queued', 'running', 'processing'))
+     on conflict (radar_id, kind, run_key) do update
+       set status = 'queued', scheduled_at = now(), error = null, error_code = null, provider_response_id = null,
+           started_at = null, completed_at = null, retry_count = 0, lease_until = null
+       where research_runs.status in ('failed', 'cancelled')
+     returning id`,
+    [radarId, RERUN_KEY],
+  )
+  return rows[0]?.id ?? null
 }
 
 export async function setWebhookUrl(radarId: string, url: string | null) {
@@ -380,8 +428,9 @@ export async function updateLeadStatus(radarId: string, leadId: string, status: 
 }
 
 /**
- * Focus narrows future daily runs to evidenced profile services and a market. It never triggers a search,
- * adds services outside the profile, or touches the deadline.
+ * Focus narrows future runs to evidenced profile services and a market. It never triggers a search by itself, adds
+ * services outside the profile, or touches the deadline. The change is dated: on a sleeping radar it earns the one
+ * free second search (RadarView.rerun).
  */
 export async function updateFocus(radar: RadarRow, focus: Focus | null) {
   if (focus) {
@@ -390,7 +439,14 @@ export async function updateFocus(radar: RadarRow, focus: Focus | null) {
     focus = { services: focus.services.filter((service) => allowed.has(service)), market: focus.market, wanted: text(focus.wanted), avoid: text(focus.avoid) }
     if (!focus.services.length && !focus.market && !focus.wanted && !focus.avoid) focus = null
   }
-  await query(`update radars set focus = $2 where id = $1`, [radar.id, focus ? toJsonb(focus) : null])
+  const value = focus ? toJsonb(focus) : null
+  try {
+    await query(`update radars set focus = $2, focus_updated_at = now() where id = $1`, [radar.id, value])
+  } catch (error) {
+    // Deployed before migration 010: the focus still saves; only the free second search after an edit waits for it.
+    if ((error as { code?: string }).code !== UNDEFINED_COLUMN) throw error
+    await query(`update radars set focus = $2 where id = $1`, [radar.id, value])
+  }
 }
 
 /** Changing timezone only moves the next morning run. The research deadline is immutable. */
@@ -448,6 +504,56 @@ export async function unsubscribeRadar(radarId: string) {
     [radarId],
   )
   return rows[0] ?? null
+}
+
+/**
+ * Hosts shared by many businesses (a profile or a page on someone else's domain): only the exact address counts as
+ * "the same website" there.
+ */
+const SHARED_HOSTS = new Set([
+  'linkedin.com', 'facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com', 'tiktok.com', 'github.com',
+  'medium.com', 'linktr.ee', 'bento.me', 'behance.net', 'dribbble.com', 'upwork.com', 'fiverr.com', 'malt.fr', 'malt.com',
+  'notion.site', 'sites.google.com', 'about.me',
+])
+
+/**
+ * The free search is one per website and one per email address (FREE_RADAR_WINDOW_DAYS). Returns the radar that
+ * already used it: a radar for the same website on any plan, else a free radar created with the same email.
+ * Radars whose website could not be read don't count (they cost next to nothing, and the correction flow needs a
+ * second one); a first search still running does, so parallel requests can't slip through.
+ */
+export async function findClaimedFreeSearch(website: { url: string; host: string }, email: string) {
+  if (!(config.freeRadarWindowDays > 0)) return null
+  const shared = SHARED_HOSTS.has(website.host.replace(/^www\./, ''))
+  const [row] = await query<RadarRow & { same_website: boolean }>(
+    `select r.*, (r.website = $1 or (r.website_host = $2 and not $3::boolean)) as same_website
+     from radars r
+     where r.created_at > now() - ($5 || ' days')::interval
+       and (r.website = $1 or (r.website_host = $2 and not $3::boolean) or (r.email = $4 and r.plan = 'free'))
+       and (r.profile is not null or exists (
+         select 1 from research_runs rr
+         where rr.radar_id = r.id and rr.kind = 'initial' and rr.status in ('queued', 'running', 'processing')))
+     order by same_website desc, r.created_at desc
+     limit 1`,
+    [website.url, website.host, shared, email, String(config.freeRadarWindowDays)],
+  )
+  return row ? { radar: row as RadarRow, match: row.same_website ? ('website' as const) : ('email' as const) } : null
+}
+
+/** At most one link email per radar and hour: true when this call may send it. */
+export async function claimLinkEmail(radarId: string) {
+  try {
+    const rows = await query(
+      `update radars set link_sent_at = now()
+       where id = $1 and (link_sent_at is null or link_sent_at < now() - interval '1 hour') returning id`,
+      [radarId],
+    )
+    return rows.length > 0
+  } catch (error) {
+    // Deployed before migration 010: without the hourly guard, nothing is sent.
+    if ((error as { code?: string }).code !== UNDEFINED_COLUMN) throw error
+    return false
+  }
 }
 
 /**

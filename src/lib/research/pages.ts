@@ -198,3 +198,45 @@ export async function readWebsite(websiteUrl: string, maxPages: number, maxChars
   const others = await Promise.all(offerLinks(homeHtml, home.finalUrl, maxPages - 1).map((url) => fetchPage(url, maxChars)))
   return [home, ...others]
 }
+
+/* ---------------------------------- Probe ---------------------------------- */
+
+const PROBE_TIMEOUT_MS = 5_000
+
+export type WebsiteProbe =
+  | { reachable: true }
+  /** not_found: the domain doesn't resolve. missing: the address answers 404/410. blocked: any other refusal. */
+  | { reachable: false; reason: 'not_found' | 'missing' | 'blocked'; detail: string }
+  /** Slow or ambiguous: say nothing rather than warn wrongly. */
+  | { reachable: null }
+
+/**
+ * One quick request to the visitor's website with the same reader the research uses, before their free search is
+ * spent on a typo. It only ever produces a warning: a slow site, or any failure we can't name, passes silently.
+ */
+export async function probeWebsite(input: string): Promise<WebsiteProbe> {
+  let url = safeOutgoingUrl(input)
+  try {
+    for (let hop = 0; url && hop <= MAX_REDIRECTS; hop++) {
+      const response = await fetch(url, {
+        redirect: 'manual',
+        headers: { 'user-agent': USER_AGENT, accept: 'text/html' },
+        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      })
+      await response.body?.cancel().catch(() => undefined)
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        url = safeOutgoingUrl(new URL(response.headers.get('location')!, url).toString())
+        continue
+      }
+      if (response.ok) return { reachable: true }
+      if (response.status === 404 || response.status === 410) return { reachable: false, reason: 'missing', detail: `HTTP ${response.status}` }
+      return { reachable: false, reason: 'blocked', detail: `HTTP ${response.status}` }
+    }
+    return { reachable: null }
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string } }).cause?.code ?? ''
+    if (cause === 'ENOTFOUND' || cause === 'EAI_AGAIN') return { reachable: false, reason: 'not_found', detail: cause }
+    if (cause === 'ECONNREFUSED') return { reachable: false, reason: 'blocked', detail: cause }
+    return { reachable: null }
+  }
+}

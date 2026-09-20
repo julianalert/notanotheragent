@@ -21,7 +21,7 @@ export const POST = withErrors(async function postHandler(request: Request, { pa
   const style = body?.style
   if (!STYLES.has(style) || !/^[0-9a-f-]{36}$/i.test(leadId)) return json({ error: 'Invalid request' }, { status: 422 })
   if (!process.env.OPENAI_API_KEY) return json({ error: 'Rewriting is not available right now.' }, { status: 503 })
-  if (!rateLimit(`draft:${clientKey(request)}`, config.retryRateLimitPerHour * 6)) {
+  if (!(await rateLimit(`draft:${clientKey(request)}`, config.retryRateLimitPerHour * 6))) {
     return json({ error: 'Too many rewrites. Please try again later.' }, { status: 429 })
   }
   const [row] = await query<{ data: LeadT }>(`select data from leads where id = $2 and radar_id = $1`, [radar.id, leadId])

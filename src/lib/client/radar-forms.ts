@@ -2,19 +2,21 @@
 
 import { storedAttribution } from './attribution'
 
-export type CheckWebsiteResult = { ok: true; host: string; existingToken: string | null } | { ok: false; error: string }
+export type CheckWebsiteResult =
+  | { ok: true; host: string; existingToken: string | null; /** The site couldn't be opened: shown once, never blocking. */ warning: string | null }
+  | { ok: false; error: string }
 
-/** Home step 1: validates the website without starting research. */
-export async function checkWebsite(website: string): Promise<CheckWebsiteResult> {
+/** Home step 1: validates the website without starting research. `confirmed` skips the reachability warning. */
+export async function checkWebsite(website: string, confirmed = false): Promise<CheckWebsiteResult> {
   try {
     const response = await fetch('/api/radars/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ website }),
+      body: JSON.stringify({ website, confirmed }),
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) return { ok: false, error: body.error ?? 'Something went wrong. Please try again.' }
-    return { ok: true, host: body.host, existingToken: body.existingToken ?? null }
+    return { ok: true, host: body.host, existingToken: body.existingToken ?? null, warning: body.warning ?? null }
   } catch {
     return { ok: false, error: 'We could not reach the server. Check your connection and try again.' }
   }

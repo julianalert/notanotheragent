@@ -33,7 +33,9 @@ import {
   type ErrorCode,
   type Inspection,
   type OutputItem,
+  type PartialResult,
   type ResearchProvider,
+  type RunProgress,
   type ToolAction,
   type Usage,
 } from './provider'
@@ -88,18 +90,54 @@ export type PipelineState = {
   sources: PipelineSource[]
   accessFailures: string[]
   usage: Usage
+  /** Runs started before qualification was split into batches hold their single request here. */
   qualifyResponseId: string | null
+  /** One background qualification request per batch of sources, best-looking sources first. */
+  qualifyBatches?: QualifyBatch[]
+  /** When the current step began, for the progress shown during the wait. */
+  stepStartedAt?: string
   resultText: string | null
   auditUrls: string[]
   actions: ToolAction[]
   error: { code: ErrorCode; message: string } | null
 }
 
+export type QualifyBatch = {
+  responseId: string
+  sourceIds: string[]
+  status: 'pending' | 'done' | 'failed'
+  result: ResearchResultT | null
+  error: string | null
+  /** Its candidates were given to the scheduler to publish before the run ended. */
+  handedOver: boolean
+}
+
 export interface PipelineStore {
   create(state: PipelineState): Promise<string>
   load(id: string): Promise<PipelineState | null>
   save(id: string, state: PipelineState): Promise<void>
+  /** Step and counts only: read while a visitor waits, so it must never load the source texts. */
+  progress(id: string): Promise<RunProgress | null>
 }
+
+const PROGRESS_STEPS = new Set(['brief', 'search', 'triage', 'read', 'qualify', 'qualify_poll'])
+
+export function progressOf(state: PipelineState): RunProgress | null {
+  if (!PROGRESS_STEPS.has(state.step)) return null
+  const past = (step: PipelineStep) => ORDER.indexOf(state.step) > ORDER.indexOf(step)
+  const batches = state.qualifyBatches
+  return {
+    step: state.step === 'qualify_poll' ? 'qualify' : (state.step as RunProgress['step']),
+    stepStartedAt: state.stepStartedAt ?? null,
+    // Two entries per page (requested and final URL).
+    websitePages: past('brief') && state.websitePages.length ? Math.ceil(state.websitePages.length / 2) : null,
+    hits: past('search') ? state.hits.length : null,
+    sources: past('triage') ? state.sources.length : null,
+    batches: batches?.length ? { done: batches.filter((batch) => batch.status !== 'pending').length, total: batches.length } : null,
+  }
+}
+
+const ORDER: PipelineStep[] = ['brief', 'search', 'triage', 'read', 'qualify', 'qualify_poll', 'done']
 
 /** Postgres-backed store (pipeline_runs). The database module is loaded lazily so scripts can use the memory store. */
 export const dbPipelineStore: PipelineStore = {
@@ -117,6 +155,29 @@ export const dbPipelineStore: PipelineStore = {
   async save(id, state) {
     const { query } = await import('../db')
     await query(`update pipeline_runs set state = $2, updated_at = now() where id = $1`, [id, toJsonb(state)])
+  },
+  async progress(id) {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return null
+    const { query } = await import('../db')
+    // Projected in SQL: the state holds every source text, far too much to load on each poll of the waiting page.
+    const [row] = await query<{ step: PipelineStep; step_started_at: string | null; pages: number; hits: number; sources: number; batches: Array<{ status: string }> | null }>(
+      `select state->>'step' as step, state->>'stepStartedAt' as step_started_at,
+         jsonb_array_length(coalesce(state->'websitePages', '[]'::jsonb)) as pages,
+         jsonb_array_length(coalesce(state->'hits', '[]'::jsonb)) as hits,
+         jsonb_array_length(coalesce(state->'sources', '[]'::jsonb)) as sources,
+         (select jsonb_agg(jsonb_build_object('status', batch->>'status')) from jsonb_array_elements(coalesce(state->'qualifyBatches', '[]'::jsonb)) batch) as batches
+       from pipeline_runs where id = $1`,
+      [id],
+    )
+    if (!row) return null
+    return progressOf({
+      step: row.step,
+      stepStartedAt: row.step_started_at ?? undefined,
+      websitePages: Array.from({ length: row.pages }, () => ''),
+      hits: Array.from({ length: row.hits }) as PipelineState['hits'],
+      sources: Array.from({ length: row.sources }) as PipelineState['sources'],
+      qualifyBatches: (row.batches ?? []) as QualifyBatch[],
+    } as PipelineState)
   },
 }
 
@@ -138,6 +199,10 @@ export function memoryPipelineStore(): PipelineStore & { states: Map<string, Pip
     async save(id, state) {
       states.set(id, structuredClone(state))
     },
+    async progress(id) {
+      const state = states.get(id)
+      return state ? progressOf(state) : null
+    },
   }
 }
 
@@ -153,6 +218,11 @@ const TRIAGE_BATCH = 40
 /** A failed triage batch is retried alone, after 15 s and then 30 s (rate limits are per minute). */
 const TRIAGE_BATCH_RETRIES = 2
 const TRIAGE_RETRY_PAUSE_MS = 15_000
+/**
+ * Sources per qualification request. The requests run side by side, best-looking sources first, so the first leads
+ * are confirmed (and shown) while the rest are still being judged, and the whole step takes as long as one batch.
+ */
+const QUALIFY_BATCH_SIZE = 5
 /** Pages read through hosted browsing per run (each is a small model call). */
 const MAX_BROWSER_READS = 8
 
@@ -198,6 +268,7 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
         step: 'brief',
         attempts: {},
         startedAt: new Date().toISOString(),
+        stepStartedAt: new Date().toISOString(),
         input,
         connectors: context.connectors ?? null,
         subreddits: context.subreddits ?? [],
@@ -244,6 +315,7 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
         ]).finally(() => clearTimeout(timer))
         // A step that did not advance (background qualification still running) keeps the run pending.
         if (advanced) log('pipeline.step', { step, next: state.step, sources: state.sources.length, hits: state.hits.length })
+        if (state.step !== step) state.stepStartedAt = new Date().toISOString()
       } catch (error) {
         const failure = classifyStepError(error)
         const attempts = (state.attempts[step] ?? 0) + 1
@@ -278,15 +350,26 @@ export function createPipelineProvider(store: PipelineStore): ResearchProvider {
       const next = stepOf(state)
       if (next === 'done') return completed(state)
       if (next === 'failed') return { state: 'failed', code: state.error!.code, message: state.error!.message, usage: state.usage, raw: summary(state) }
+      // Saved, so what is handed over can't be lost to a retry: the profile once the website is read, then each
+      // finished qualification batch. The final result still carries everything; this only makes it visible sooner.
+      const partial = partialOf(state, step)
+      if (partial) {
+        for (const batch of state.qualifyBatches ?? []) if (batch.status === 'done') batch.handedOver = true
+        await store.save(id, state).catch(() => undefined)
+        return { state: 'pending', partial }
+      }
       return { state: 'pending' }
     },
+
+    progress: (id) => store.progress(id),
 
     format: repairFormat,
 
     async cancel(id) {
       const state = await store.load(id)
       if (!state || state.step === 'done' || state.step === 'failed') return
-      if (state.qualifyResponseId) await openai().responses.cancel(state.qualifyResponseId).catch(() => undefined)
+      const pendingIds = [state.qualifyResponseId, ...(state.qualifyBatches ?? []).filter((batch) => batch.status === 'pending').map((batch) => batch.responseId)]
+      for (const responseId of pendingIds) if (responseId) await openai().responses.cancel(responseId).catch(() => undefined)
       state.step = 'failed'
       state.error = { code: 'timed_out', message: 'Cancelled at the deadline' }
       await store.save(id, state)
@@ -576,87 +659,177 @@ async function stepQualify(state: PipelineState) {
     return true
   }
   const { input } = state
-  try {
-    const response = await openai().responses.create({
-      model: RESEARCH_MODEL,
-      reasoning: { effort: RESEARCH_REASONING_EFFORT },
-      background: true,
-      store: true,
-      tools: [],
-      max_output_tokens: MAX_OUTPUT_TOKENS,
-      instructions: QUALIFY_PROMPT,
-      input: JSON.stringify({
-        mode: input.mode,
-        now_utc: input.now_utc,
-        published_on_or_after: input.published_on_or_after,
-        last_successful_run_at: input.last_successful_run_at,
-        target_count: input.target_count,
-        max_candidates: input.max_candidates,
-        output_language: input.output_language,
-        profile: state.profile,
-        excluded_opportunities: input.excluded_opportunities,
-        previous_candidates: input.previous_candidates,
-        previous_queries: input.previous_queries,
-        untried_angles: input.untried_angles,
-        feedback: input.feedback,
-        run_instructions: input.run_instructions,
-        sources: state.sources.map((source) => ({
-          id: source.id,
-          url: source.url,
-          title: source.title,
-          connector: source.connector,
-          community: source.community,
-          date_hint: source.publishedDate,
-          text: source.text,
-        })),
+  // Best triage score first, so the first batch to come back is the one most likely to hold leads.
+  const ordered = [...state.sources].sort((a, b) => b.triage - a.triage)
+  const groups: PipelineSource[][] = []
+  for (let i = 0; i < ordered.length; i += QUALIFY_BATCH_SIZE) groups.push(ordered.slice(i, i + QUALIFY_BATCH_SIZE))
+
+  const created = await Promise.allSettled(
+    groups.map((sources) =>
+      openai().responses.create({
+        model: RESEARCH_MODEL,
+        reasoning: { effort: RESEARCH_REASONING_EFFORT },
+        background: true,
+        store: true,
+        tools: [],
+        max_output_tokens: MAX_OUTPUT_TOKENS,
+        instructions: QUALIFY_PROMPT,
+        input: JSON.stringify({
+          mode: input.mode,
+          now_utc: input.now_utc,
+          published_on_or_after: input.published_on_or_after,
+          last_successful_run_at: input.last_successful_run_at,
+          target_count: input.target_count,
+          max_candidates: input.max_candidates,
+          output_language: input.output_language,
+          profile: state.profile,
+          excluded_opportunities: input.excluded_opportunities,
+          previous_candidates: input.previous_candidates,
+          previous_queries: input.previous_queries,
+          untried_angles: input.untried_angles,
+          feedback: input.feedback,
+          run_instructions: input.run_instructions,
+          sources: sources.map((source) => ({
+            id: source.id,
+            url: source.url,
+            title: source.title,
+            connector: source.connector,
+            community: source.community,
+            date_hint: source.publishedDate,
+            text: source.text,
+          })),
+        }),
+        text: { format: resultFormat() },
       }),
-      text: { format: resultFormat() },
-    })
-    state.qualifyResponseId = response.id
-  } catch (error) {
-    throw classifyCreateError(error)
+    ),
+  )
+  const batches: QualifyBatch[] = []
+  created.forEach((outcome, index) => {
+    if (outcome.status === 'fulfilled') {
+      batches.push({ responseId: outcome.value.id, sourceIds: groups[index].map((source) => source.id), status: 'pending', result: null, error: null, handedOver: false })
+    }
+  })
+  if (!batches.length) {
+    // Nothing was accepted: cancel nothing, retry the step as a whole.
+    throw classifyCreateError((created[0] as PromiseRejectedResult).reason)
   }
+  const refused = created.length - batches.length
+  if (refused) {
+    log('pipeline.qualify_batches_refused', { refused, accepted: batches.length })
+    state.accessFailures.push(`${refused} of ${created.length} qualification requests could not be started; their sources were not judged.`)
+  }
+  state.qualifyBatches = batches
   state.step = 'qualify_poll'
   return true
 }
 
 async function stepQualifyPoll(state: PipelineState) {
-  const response = await openai().responses.retrieve(state.qualifyResponseId!)
-  if (response.status === 'queued' || response.status === 'in_progress') return false
-  addUsage(state, usageOf(response))
-  const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
-  if (response.status === 'completed') {
-    if (audit.refusal) throw new ResearchError('refusal', audit.refusal)
-    if (!audit.text.trim()) throw new ResearchError('incomplete', 'Qualification completed without output text')
-    let parsed = ResearchResult.safeParse(safeJson(audit.text))
-    if (!parsed.success) {
-      log('pipeline.format_repair', { problem: parsed.error.message.slice(0, 200) })
-      const repaired = await repairFormat(audit.text)
-      addUsage(state, repaired.usage)
-      parsed = ResearchResult.safeParse(safeJson(repaired.text))
-      if (!parsed.success) throw new ResearchError('invalid_output', `Unparseable after formatting: ${parsed.error.message.slice(0, 300)}`)
-    }
-    const result: ResearchResultT = {
-      ...parsed.data,
-      // The source texts are only available here: confirm the handles the model named without identity evidence.
-      candidates: confirmHandlesFromSources(parsed.data.candidates, state.sources),
-      profile: state.profile,
-      coverage: {
-        ...parsed.data.coverage,
-        access_failures: [...new Set([...parsed.data.coverage.access_failures, ...state.accessFailures])],
-        limitations: [
-          ...parsed.data.coverage.limitations,
-          ...state.unavailable.map((connector) => `Search connector unavailable this run: ${connector}.`),
-        ],
-      },
-    }
-    finish(state, result)
-    return true
+  // A run started before batching has one request: poll it as a single batch.
+  state.qualifyBatches ??= [
+    { responseId: state.qualifyResponseId!, sourceIds: state.sources.map((source) => source.id), status: 'pending', result: null, error: null, handedOver: false },
+  ]
+  const batches = state.qualifyBatches
+  let progressed = false
+  const fatal: ResearchError[] = []
+
+  await Promise.all(
+    batches
+      .filter((batch) => batch.status === 'pending')
+      .map(async (batch) => {
+        const response = await openai().responses.retrieve(batch.responseId)
+        if (response.status === 'queued' || response.status === 'in_progress') return
+        progressed = true
+        addUsage(state, usageOf(response))
+        const audit = auditFromOutput((response.output ?? []) as unknown as OutputItem[])
+        const fail = (error: ResearchError) => {
+          batch.status = 'failed'
+          batch.error = error.message.slice(0, 300)
+          fatal.push(error)
+        }
+        if (response.status !== 'completed') {
+          if (response.status === 'incomplete') return fail(new ResearchError('incomplete', `Incomplete: ${response.incomplete_details?.reason ?? 'unknown'}`))
+          if (response.status === 'cancelled') return fail(new ResearchError('timed_out', 'Cancelled'))
+          const code = response.error?.code ?? ''
+          return fail(new ResearchError(code === 'server_error' || code === 'rate_limit_exceeded' ? 'provider_transient' : 'provider_failed', response.error?.message ?? `Provider status ${response.status}`))
+        }
+        if (audit.refusal) return fail(new ResearchError('refusal', audit.refusal))
+        if (!audit.text.trim()) return fail(new ResearchError('incomplete', 'Qualification completed without output text'))
+        let parsed = ResearchResult.safeParse(safeJson(audit.text))
+        if (!parsed.success) {
+          log('pipeline.format_repair', { problem: parsed.error.message.slice(0, 200) })
+          const repaired = await repairFormat(audit.text)
+          addUsage(state, repaired.usage)
+          parsed = ResearchResult.safeParse(safeJson(repaired.text))
+          if (!parsed.success) return fail(new ResearchError('invalid_output', `Unparseable after formatting: ${parsed.error.message.slice(0, 300)}`))
+        }
+        batch.status = 'done'
+        batch.result = {
+          ...parsed.data,
+          // The source texts are only available here: confirm the handles the model named without identity evidence.
+          candidates: confirmHandlesFromSources(parsed.data.candidates, state.sources),
+        }
+      }),
+  )
+
+  if (batches.some((batch) => batch.status === 'pending')) return progressed
+  const done = batches.filter((batch) => batch.status === 'done')
+  // Every batch failed: the run fails (or retries) exactly as a single request did. Some failed: the leads the
+  // others found are kept, and the run says what it could not judge.
+  if (!done.length) throw fatal[0] ?? new ResearchError('provider_failed', 'Qualification produced no result')
+  finish(state, mergeBatches(state, batches))
+  return true
+}
+
+/** One result from the batches, in batch order (best sources first), as if a single request had judged them all. */
+function mergeBatches(state: PipelineState, batches: QualifyBatch[]): ResearchResultT {
+  const results = batches.flatMap((batch) => (batch.result ? [batch.result] : []))
+  const failed = batches.filter((batch) => batch.status === 'failed')
+  const unique = (values: string[]) => [...new Set(values)]
+  const worthwhile = results.filter((result) => result.follow_up.worthwhile)
+  return {
+    schema_version: '3',
+    research_status: results.every((result) => result.research_status === 'complete') && !failed.length ? 'complete' : 'incomplete',
+    profile: state.profile,
+    search_plan: {
+      angles: unique(results.flatMap((result) => result.search_plan.angles)),
+      proposed_queries: unique(results.flatMap((result) => result.search_plan.proposed_queries)),
+    },
+    candidates: results.flatMap((result) => result.candidates),
+    follow_up: {
+      worthwhile: worthwhile.length > 0,
+      reason: (worthwhile[0] ?? results[0]).follow_up.reason,
+      untried_angles: unique(results.flatMap((result) => result.follow_up.untried_angles)),
+      candidates_to_verify: unique(results.flatMap((result) => result.follow_up.candidates_to_verify)),
+    },
+    coverage: {
+      access_failures: unique([...results.flatMap((result) => result.coverage.access_failures), ...state.accessFailures]),
+      limitations: unique([
+        ...results.flatMap((result) => result.coverage.limitations),
+        ...state.unavailable.map((connector) => `Search connector unavailable this run: ${connector}.`),
+        ...(failed.length ? [`${failed.length} of ${batches.length} qualification batches failed; their sources were not judged.`] : []),
+      ]),
+      rejection_summary: unique(results.flatMap((result) => result.coverage.rejection_summary)),
+    },
   }
-  if (response.status === 'incomplete') throw new ResearchError('incomplete', `Incomplete: ${response.incomplete_details?.reason ?? 'unknown'}`)
-  if (response.status === 'cancelled') throw new ResearchError('timed_out', 'Cancelled')
-  const code = response.error?.code ?? ''
-  throw new ResearchError(code === 'server_error' || code === 'rate_limit_exceeded' ? 'provider_transient' : 'provider_failed', response.error?.message ?? `Provider status ${response.status}`)
+}
+
+/**
+ * What can be shown before the run ends: the profile right after the website was read (first runs only), then the
+ * candidates of each qualification batch as it finishes. Nothing once the run is over: the final result has it all.
+ */
+function partialOf(state: PipelineState, ranStep: PipelineStep): PartialResult | null {
+  const sources = state.sources.map((source) => ({ url: source.url, topic: source.topic }))
+  if (ranStep === 'brief' && state.step === 'search' && state.input.mode === 'initial' && state.profile) {
+    return { profile: state.profile, candidates: [], auditUrls: [...new Set(state.auditUrls)], sources }
+  }
+  const fresh = (state.qualifyBatches ?? []).filter((batch) => batch.status === 'done' && !batch.handedOver)
+  if (ranStep !== 'qualify_poll' || !fresh.length) return null
+  return {
+    profile: state.profile,
+    candidates: fresh.flatMap((batch) => batch.result?.candidates ?? []),
+    auditUrls: [...new Set(state.auditUrls)],
+    sources,
+  }
 }
 
 /* -------------------------------- Helpers --------------------------------- */
@@ -705,6 +878,7 @@ function summary(state: PipelineState) {
       triage: state.triage,
       sources: state.sources.map(({ text, ...rest }) => ({ ...rest, chars: text.length })),
       access_failures: state.accessFailures,
+      qualify_batches: (state.qualifyBatches ?? []).map((batch) => ({ sources: batch.sourceIds.length, status: batch.status, error: batch.error })),
       error: state.error,
     },
   }

@@ -10,7 +10,7 @@ import { trackDesk } from '@/lib/client/track'
 import { LeadDrawer, LeadItem, replyUrl, type DrawerAction, type RewriteStyle } from './leads'
 import { copyText, countWord, groupLabel, localDateKey, useToast } from './lib'
 import { Rail, type DeskView } from './rail'
-import { DeadEnd, EmailStep, FocusEditor, NoResults, Searching, STEPS, stageFor } from './screens'
+import { DeadEnd, EmailStep, FocusEditor, NoResults, RerunOffer, Searching, STEPS, stageFor, Understood, WaitFooter } from './screens'
 
 const ACTIVE_POLL_MS = 3000
 const IDLE_POLL_MS = 60000
@@ -47,6 +47,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   const [openId, setOpenId] = useState<string | null>(null)
   const [editingFocus, setEditingFocus] = useState(false)
   const [activating, setActivating] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
@@ -99,7 +100,12 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   }, [api])
 
   const initialStatus = view.initialRun?.status
-  const busy = isInProgress(initialStatus) || isInProgress(view.latestDailyRun?.status) || isInProgress(view.followUpRun?.status)
+  // Also while a fresh lead's "who they are" is still being looked up, so it appears without a reload.
+  const busy =
+    isInProgress(initialStatus) ||
+    isInProgress(view.latestDailyRun?.status) ||
+    isInProgress(view.followUpRun?.status) ||
+    view.leads.some((lead) => lead.enriching)
 
   // Poll saved state. Fast while research runs; slow otherwise so morning results still appear.
   useEffect(() => {
@@ -151,9 +157,12 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   /* ----------------------------- Screens ---------------------------- */
 
   const run = view.initialRun
+  // Leads are published while the first search is still going: as soon as one exists, the list replaces the wait.
+  const streaming = Boolean(run && run.status !== 'completed' && view.leads.length > 0)
   let screen: Screen
   if (!view.hasEmail) screen = 'email'
-  else if (!run || run.status !== 'completed' || holdReady) screen = 'searching'
+  else if (streaming) screen = 'leads'
+  else if (!run || run.status !== 'completed' || (holdReady && view.leads.length === 0)) screen = 'searching'
   else if (run.outcome === 'website_unreadable' || (run.outcome === 'validation_failed' && !view.profileServices.length)) screen = 'unreadable'
   else if (run.outcome === 'unsupported_business') screen = 'unsupported'
   else if (view.leads.length === 0) screen = 'empty'
@@ -267,14 +276,20 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
           options: DISMISS_CHOICES,
           onChoose: (reason) => {
             void persistStatus(lead.id, 'dismissed', reason)
-            showToast('Noted. The next searches will avoid leads like this.')
+            showToast(
+              view.agentLive
+                ? 'Noted. The next searches will avoid leads like this.'
+                : view.rerun.used
+                  ? 'Noted. Your agent will avoid leads like this once it’s active.'
+                  : 'Noted. Your free second search will avoid leads like this.',
+            )
           },
         })
       } else {
         showToast(message, undo)
       }
     },
-    [rows, openId, persistStatus, showToast, hideToast],
+    [rows, openId, persistStatus, showToast, hideToast, view.agentLive, view.rerun.used],
   )
 
   const onDrawerAction = useCallback(
@@ -359,6 +374,16 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
     return null
   }
 
+  /** The one free second search of a sleeping radar (see RadarView.rerun). */
+  async function rerun() {
+    setRerunning(true)
+    const response = await api('/rerun', { method: 'POST' }).catch(() => null)
+    if (!response?.ok) showToast((await response?.json().catch(() => ({})))?.error ?? 'We couldn’t start the search. Try again.')
+    else showToast('Searching again. New leads will appear here.')
+    await refresh()
+    setRerunning(false)
+  }
+
   async function setTimezone(timezone: string) {
     await api('/timezone', { method: 'PATCH', body: JSON.stringify({ timezone }) }).catch(() => null)
     await refresh()
@@ -421,7 +446,23 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
   else if (counts.today === 0) title = 'Everything has been handled'
   else title = `${countWord(counts.today)} lead${counts.today === 1 ? '' : 's'} to review`
 
-  const showFocus = view.focus && (screen === 'leads' || screen === 'empty')
+  const showFocus = view.focus && (screen === 'leads' || screen === 'empty' || screen === 'searching')
+  const searchRunning = isInProgress(initialStatus) || isInProgress(view.followUpRun?.status)
+  const focusHint = searchRunning
+    ? 'Your service choices filter the results of the search that’s running' + (view.rerun.used ? '.' : '; everything applies to your free second search.')
+    : view.agentLive
+      ? 'Changes apply from the next search.'
+      : view.rerun.used
+        ? 'Changes apply once your agent is active.'
+        : 'Save, then run your free second search with these settings.'
+  const secondSearch = view.followUpRun && isInProgress(view.followUpRun.status) ? view.followUpRun : null
+  const focusModal = editingFocus && showFocus && (
+    <div className="focus-modal-scrim" onClick={() => setEditingFocus(false)}>
+      <div className="focus-modal" onClick={(event) => event.stopPropagation()}>
+        <FocusEditor view={view} hint={focusHint} onSave={saveFocus} onClose={() => setEditingFocus(false)} />
+      </div>
+    </div>
+  )
   // When the agent sleeps, one promo sits third in Today so the value is visible where the leads are.
   const showPromo = deskView === 'today' && !view.agentLive && view.billingConfigured && view.plan !== 'active' && rows.length > 2
 
@@ -456,6 +497,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
             <h1>{title}</h1>
             <Searching
               run={holdReady && run ? { ...run, status: 'completed' } : run}
+              host={view.websiteHost}
               now={now}
               slow={run ? now - Date.parse(run.createdAt) > view.slowRunThresholdMs : false}
               expired={view.expired}
@@ -463,8 +505,18 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
               retryError={retryError}
               onRetry={retry}
             />
+            {run?.status !== 'failed' && run?.status !== 'cancelled' && (
+              <>
+                <Understood view={view} onAdjust={() => setEditingFocus(true)} />
+                <WaitFooter emailMasked={view.emailMasked} linkCopied={linkCopied} onCopyLink={copyPrivateLink} />
+              </>
+            )}
           </div>
         </main>
+        {focusModal}
+        <div className={`toast ${toast ? 'show' : ''}`} role="status">
+          <span>{toast?.text}</span>
+        </div>
       </div>
     )
   }
@@ -570,7 +622,16 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
 
           {screen === 'unreadable' && <DeadEnd view={view} kind="unreadable" />}
           {screen === 'unsupported' && <DeadEnd view={view} kind="unsupported" />}
-          {screen === 'empty' && <NoResults view={view} onActivate={() => billing('/checkout', 'empty')} activating={activating} />}
+          {screen === 'empty' && (
+            <NoResults
+              view={view}
+              onActivate={() => billing('/checkout', 'empty')}
+              activating={activating}
+              rerunning={rerunning}
+              onRerun={rerun}
+              onAdjust={() => setEditingFocus(true)}
+            />
+          )}
 
           {screen === 'leads' && (
             <>
@@ -593,6 +654,36 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
                 )}
               </div>
               )}
+              {streaming && isInProgress(initialStatus) && (
+                <p className="note note--live" role="status">
+                  <span className="spinner" aria-hidden="true" />
+                  <span>
+                    <b>Your first leads are in.</b> We’re still checking the remaining posts
+                    {run?.progress?.batches ? ` (${run.progress.batches.done} of ${run.progress.batches.total} groups done)` : ''}: more may appear
+                    here in the next few minutes.
+                  </span>
+                </p>
+              )}
+              {streaming && run?.status === 'failed' && (
+                <p className="note">
+                  The search stopped before it finished; these are the leads it had confirmed.{' '}
+                  {run.canRetry && (
+                    <button type="button" className="link" onClick={retry} disabled={retrying}>
+                      {retrying ? 'Retrying…' : 'Finish the search'}
+                    </button>
+                  )}
+                </p>
+              )}
+              {secondSearch && (
+                <p className="note note--live" role="status">
+                  <span className="spinner" aria-hidden="true" />
+                  <span>
+                    <b>Searching again{view.focusSelection ? ' with your corrections' : ''}.</b>{' '}
+                    {secondSearch.progress ? `${STEPS[stageFor(secondSearch).active]?.label}. ` : ''}New leads will appear here.
+                  </span>
+                </p>
+              )}
+              {deskView === 'today' && <RerunOffer view={view} busy={rerunning} onRerun={rerun} onAdjust={null} />}
               {view.sampleData && (
                 <p className="note">Development mode: these leads come from the sample research provider, not real research.</p>
               )}
@@ -674,13 +765,7 @@ export function DeskApp({ token, initialView }: { token: string; initialView: Ra
       </div>
 
 
-      {editingFocus && showFocus && (
-        <div className="focus-modal-scrim" onClick={() => setEditingFocus(false)}>
-          <div className="focus-modal" onClick={(event) => event.stopPropagation()}>
-            <FocusEditor view={view} onSave={saveFocus} onClose={() => setEditingFocus(false)} />
-          </div>
-        </div>
-      )}
+      {focusModal}
 
       <div className="scrim" onClick={() => setOpenId(null)} aria-hidden="true" />
       <LeadDrawer

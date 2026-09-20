@@ -29,8 +29,12 @@ const SANS = "Inter,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif"
 const SERIF = "'Instrument Serif',Georgia,'Times New Roman',serif"
 
 export type RunEmailInput = {
-  /** initial: first results. daily: the morning digest. instant: a strong explicit request found by a watch run. */
-  kind: 'initial' | 'daily' | 'instant'
+  /**
+   * initial: first results. daily: the morning digest. instant: a strong explicit request found by a watch run.
+   * rerun: the one free second search. link: the private link again, for someone who started a new search for a
+   * website or an email that already has a radar (no leads listed).
+   */
+  kind: 'initial' | 'daily' | 'instant' | 'rerun' | 'link'
   outcome: RunOutcome
   websiteHost: string
   businessName: string | null
@@ -49,7 +53,8 @@ function subjectFor(input: RunEmailInput) {
     const headline = input.leads[0]?.data.headline ?? 'a new request'
     return `New request: ${headline.length > 70 ? `${headline.slice(0, 67).trimEnd()}…` : headline}`
   }
-  if (input.kind === 'daily') return `${count} new ${plural(count, 'match', 'matches')} for ${input.websiteHost}`
+  if (input.kind === 'link') return `Your private link for ${input.websiteHost}`
+  if (input.kind === 'daily' || input.kind === 'rerun') return `${count} new ${plural(count, 'match', 'matches')} for ${input.websiteHost}`
   if (count > 0) return `Your first ${count} ${plural(count, 'match is', 'matches are')} ready for ${input.websiteHost}`
   if (input.outcome === 'website_unreadable' || input.outcome === 'unsupported_business') {
     return `We couldn’t research ${input.websiteHost} yet`
@@ -61,6 +66,8 @@ function subjectFor(input: RunEmailInput) {
 function headlineFor(input: RunEmailInput) {
   const count = input.leads.length
   if (input.kind === 'instant') return count === 1 ? 'A new request matches your work' : `${count} new requests match your work`
+  if (input.kind === 'link') return 'Here is your private link'
+  if (input.kind === 'rerun') return `${count} new ${plural(count, 'match', 'matches')} from your second search`
   if (input.kind === 'daily') return `${count} new ${plural(count, 'match', 'matches')} this morning`
   if (count > 0) return `Your first ${count} ${plural(count, 'match is', 'matches are')} ready`
   if (input.outcome === 'website_unreadable' || input.outcome === 'unsupported_business') return 'We couldn’t research your website yet'
@@ -69,6 +76,12 @@ function headlineFor(input: RunEmailInput) {
 
 function introFor(input: RunEmailInput) {
   const count = input.leads.length
+  if (input.kind === 'link') {
+    return `Someone just started a new search for ${input.websiteHost} or with this email address. Your radar already exists, so here is its link again: your leads, sources and first messages are all there. If this wasn’t you, you can ignore this email.`
+  }
+  if (count > 0 && input.kind === 'rerun') {
+    return `Your second search, with your corrections, found ${count} more public ${plural(count, 'post', 'posts')} from people who need what you offer.`
+  }
   if (count > 0) {
     if (input.kind === 'instant') {
       return count === 1
@@ -124,11 +137,12 @@ export function renderRunEmail(input: RunEmailInput) {
   const subject = subjectFor(input)
   const headline = headlineFor(input)
   const intro = introFor(input)
-  const cta = input.leads.length ? 'See all matches and first messages' : 'Open your private page'
+  const cta = input.leads.length && input.kind !== 'link' ? 'See all matches and first messages' : 'Open your private page'
   const live = input.plan === 'active' || input.plan === 'past_due'
   const footer = footerFor(input, plainDomain(input.websiteHost))
   const activateUrl = `${input.privateUrl}#activate`
-  const preheader = input.leads[0]?.data.headline ?? intro
+  const leads = input.kind === 'link' ? [] : input.leads
+  const preheader = leads[0]?.data.headline ?? intro
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${escapeHtml(subject)}</title></head>
@@ -147,7 +161,7 @@ export function renderRunEmail(input: RunEmailInput) {
         </td></tr>
         <tr><td style="padding:0 32px">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-            ${input.leads.map((lead) => leadHtml(lead, input.privateUrl)).join('')}
+            ${leads.map((lead) => leadHtml(lead, input.privateUrl)).join('')}
           </table>
         </td></tr>
         <tr><td style="padding:12px 32px 32px">
@@ -173,7 +187,7 @@ export function renderRunEmail(input: RunEmailInput) {
     '',
     intro,
     '',
-    ...input.leads.flatMap((lead) => [
+    ...leads.flatMap((lead) => [
       `- ${lead.data.headline} (${lead.data.source_platform}, ${lead.data.date_status === 'unknown' ? 'date not shown' : `published ${formatDate(lead.data.published_date)}`})`,
       `  ${input.privateUrl}#lead-${lead.id}`,
     ]),

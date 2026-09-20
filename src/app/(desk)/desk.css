@@ -332,6 +332,22 @@
 .desk .nothing h3 { font-size: 16px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
 .desk .nothing p { max-width: 60ch; }
 
+/* one free second search */
+.desk .rerun {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+  margin: 18px 0 6px; padding: 16px 18px; border-radius: var(--r); border: 1px solid var(--line); background: #f7f8f9;
+}
+.desk .rerun__title { font-size: 15px; font-weight: 600; color: var(--ink); }
+.desk .blank .rerun__text, .desk .rerun__text { margin-top: 4px; font-size: 13.5px; line-height: 1.5; color: var(--ink-2); max-width: 56ch; }
+.desk .rerun__side { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+
+/* text-style buttons inside copy */
+.desk button.link { font: inherit; color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.desk button.link:hover:not(:disabled) { color: var(--brand-ink); }
+.desk .note--live { display: flex; align-items: flex-start; gap: 10px; background: var(--request-bg); color: var(--request); }
+.desk .note--live .spinner { margin-top: 2px; }
+.desk .sec--pending p { color: var(--ink-3); font-size: 14px; }
+
 /* empty / email / dead ends */
 .desk .blank { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 28px 26px; max-width: 680px; margin-top: 22px; }
 .desk .blank h2 { font-size: 20px; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 10px; }
@@ -379,6 +395,16 @@
 .desk .failed .dot { border: 2px solid var(--ink-3); color: var(--ink-2); font-weight: 600; }
 .desk .run li b { font-weight: 500; }
 .desk .run .todo b { color: var(--ink-3); }
+.desk .run__fact { margin-left: 8px; font-size: 13px; font-weight: 400; color: var(--ink-3); }
+.desk .focus-note p + p { margin-top: 6px; }
+.desk .understood { margin-top: 26px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.desk .understood h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.desk .understood dl { display: grid; gap: 10px; }
+.desk .understood dl div { display: grid; grid-template-columns: 130px 1fr; gap: 12px; font-size: 14px; line-height: 1.5; }
+.desk .understood dt { color: var(--ink-3); }
+.desk .understood dd { color: var(--ink); }
+.desk .understood > p { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-2); font-size: 13.5px; line-height: 1.5; color: var(--ink-2); }
+@media (max-width: 560px) { .desk .understood dl div { grid-template-columns: 1fr; gap: 2px; } }
 .desk .run li p { font-size: 14px; color: var(--ink-2); max-width: 58ch; margin-top: 2px; }
 @keyframes desk-pulse { 50% { opacity: 0.35; } }
 

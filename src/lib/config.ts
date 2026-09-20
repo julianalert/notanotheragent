@@ -13,6 +13,8 @@ export const config = {
   slowRunThresholdMs: num('SLOW_RUN_THRESHOLD_SECONDS', 240) * 1000,
   createRateLimitPerHour: num('CREATE_RATE_LIMIT_PER_HOUR', 5),
   retryRateLimitPerHour: num('RETRY_RATE_LIMIT_PER_HOUR', 5),
+  // One free search per website and per email address inside this window; 0 turns the rule off (local testing).
+  freeRadarWindowDays: num('FREE_RADAR_WINDOW_DAYS', 90),
   // Paid agent: one complete run per day. Watch runs (extra polls every N hours) are off unless WATCH_INTERVAL_HOURS > 0.
   watchIntervalHours: num('WATCH_INTERVAL_HOURS', 0),
   monthlyRadarBudgetUsd: num('MONTHLY_RADAR_BUDGET_USD', 25),

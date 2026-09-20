@@ -216,6 +216,10 @@ export type GateContext = {
   profile: BusinessProfileT
   focus: Focus | null
   prior: PriorOpportunity[]
+  /** Leads this run may still publish (a run that publishes as it goes has used part of its five). */
+  maxPublished?: number
+  /** Source keys this run already published: they keep their place in the final selection. */
+  publishedKeys?: Set<string>
 }
 
 export type Score = { intent: number; service_fit: number; freshness: number; contactability: number; total: number }
@@ -579,6 +583,7 @@ export function qualifyCandidates(candidates: CandidateT[], ctx: GateContext) {
 
   passing.sort(
     (a, b) =>
+      Number(ctx.publishedKeys?.has(b.key) ?? false) - Number(ctx.publishedKeys?.has(a.key) ?? false) ||
       Number(b.check.clean.decision === 'qualified') - Number(a.check.clean.decision === 'qualified') ||
       b.check.score.total - a.check.score.total ||
       Number(b.check.clean.intent === 'explicit_request') - Number(a.check.clean.intent === 'explicit_request') ||
@@ -611,7 +616,7 @@ export function qualifyCandidates(candidates: CandidateT[], ctx: GateContext) {
       continue
     }
     history.push({ sourceKey: key, identityKey: identity, needText })
-    if (published.length >= MAX_PUBLISHED_PER_RUN) {
+    if (published.length >= Math.min(MAX_PUBLISHED_PER_RUN, ctx.maxPublished ?? MAX_PUBLISHED_PER_RUN)) {
       outcomes.push({ ...base, decision: 'qualified_not_selected', reasons: ['qualified but outside the top five'] })
       continue
     }

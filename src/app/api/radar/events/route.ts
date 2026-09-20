@@ -13,7 +13,7 @@ export const POST = withErrors(async function postHandler(request: Request) {
   const body = await request.json().catch(() => null)
   const name = body?.name as EventName
   if (!DESK_EVENTS.has(name)) return json({ ok: true, ignored: true })
-  if (!rateLimit(`events:${radar.id}`, EVENTS_PER_HOUR)) return json({ ok: true, ignored: true })
+  if (!(await rateLimit(`events:${radar.id}`, EVENTS_PER_HOUR))) return json({ ok: true, ignored: true })
 
   if (name === 'desk_viewed') {
     const recent = await query(

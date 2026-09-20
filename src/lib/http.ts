@@ -1,6 +1,7 @@
 import 'server-only'
 import { createHash } from 'node:crypto'
 import { NextResponse } from 'next/server'
+import { query } from './db'
 import { findRadarByToken } from './radars'
 
 export const RADAR_COOKIE = 'lr_radar'
@@ -20,8 +21,8 @@ const buckets = (globalThis as unknown as { __leadRadarBuckets?: Map<string, num
   new Map<string, number[]>()
 ;(globalThis as unknown as { __leadRadarBuckets?: Map<string, number[]> }).__leadRadarBuckets = buckets
 
-/** Simple sliding-window limiter. Per-instance; put a shared limiter in front for multi-instance deployments. */
-export function rateLimit(key: string, limit: number, windowMs = 60 * 60 * 1000) {
+/** Per-instance sliding window: only the fallback when the shared limiter's table can't be reached. */
+function localRateLimit(key: string, limit: number, windowMs = 60 * 60 * 1000) {
   const now = Date.now()
   const hits = (buckets.get(key) ?? []).filter((time) => now - time < windowMs)
   if (hits.length >= limit) {
@@ -31,6 +32,26 @@ export function rateLimit(key: string, limit: number, windowMs = 60 * 60 * 1000)
   hits.push(now)
   buckets.set(key, hits)
   return true
+}
+
+/**
+ * Shared limiter: `limit` hits per key and clock hour, counted in Postgres (rate_limits) so every serverless
+ * instance sees the same number. The increment is one atomic upsert. Old windows are removed by the scheduler.
+ */
+export async function rateLimit(key: string, limit: number) {
+  try {
+    const [row] = await query<{ hits: number }>(
+      `insert into rate_limits (key, window_start, hits) values ($1, date_trunc('hour', now()), 1)
+       on conflict (key, window_start) do update set hits = rate_limits.hits + 1
+       returning hits`,
+      [key],
+    )
+    return row.hits <= limit
+  } catch (error) {
+    // Migration 010 not applied yet, or the database is unreachable: limit per instance rather than not at all.
+    console.error(JSON.stringify({ event: 'rate_limit.fallback', error: (error as Error).message.slice(0, 120) }))
+    return localRateLimit(key, limit)
+  }
 }
 
 /** Resolve the radar from the private token header. Unknown and malformed tokens are indistinguishable. */

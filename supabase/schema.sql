@@ -225,6 +225,21 @@ create table if not exists public.events (
 create index if not exists events_radar_idx on public.events (radar_id, name, created_at desc);
 create index if not exists events_name_idx on public.events (name, created_at desc);
 
+-- Activation sprint: when the focus last changed (a change after the first search earns one free re-run) and when
+-- the private link was last re-sent by email (at most once an hour).
+alter table public.radars add column if not exists focus_updated_at timestamptz;
+alter table public.radars add column if not exists link_sent_at timestamptz;
+create index if not exists radars_host_idx on public.radars (website_host);
+create index if not exists radars_email_idx on public.radars (email);
+
+-- Shared rate limiter: one row per key and hour. Serverless instances share nothing else.
+create table if not exists public.rate_limits (
+  key text not null,
+  window_start timestamptz not null,
+  hits integer not null default 0,
+  primary key (key, window_start)
+);
+
 -- Security: the app connects server-side with the database connection string and scopes every query by the
 -- radar's secret token. Nothing should be reachable through Supabase's public Data API (anon/authenticated keys).
 -- RLS enabled with no policies = deny all for those roles. The postgres role used by the app bypasses RLS.
@@ -239,8 +254,9 @@ alter table public.search_stats enable row level security;
 alter table public.stripe_events enable row level security;
 alter table public.watched_sources enable row level security;
 alter table public.events enable row level security;
+alter table public.rate_limits enable row level security;
 
-revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources, public.events from anon, authenticated;
+revoke all on public.radars, public.research_runs, public.leads, public.evaluation_reviews, public.research_candidates, public.pipeline_runs, public.seen_sources, public.search_stats, public.stripe_events, public.watched_sources, public.events, public.rate_limits from anon, authenticated;
 
 -- Useful pilot queries (spec §2.3):
 --   Cost and time per run:

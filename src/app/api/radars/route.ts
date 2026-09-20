@@ -2,7 +2,8 @@ import { parseAttribution } from '@/lib/attribution'
 import { config } from '@/lib/config'
 import { normaliseEmail } from '@/lib/crypto'
 import { clientKey, json, RADAR_COOKIE, rateLimit, withErrors } from '@/lib/http'
-import { createRadar, findRadarByToken, reusableRadar, setRadarEmail } from '@/lib/radars'
+import { resendPrivateLink } from '@/lib/email/link'
+import { createRadar, findClaimedFreeSearch, findRadarByToken, reusableRadar, setRadarEmail } from '@/lib/radars'
 import { tick } from '@/lib/scheduler'
 import { isValidTimeZone } from '@/lib/time'
 import { createToken, hashToken } from '@/lib/tokens'
@@ -43,8 +44,20 @@ export const POST = withErrors(async function postHandler(request: Request) {
     return json({ error: 'Enter the email address where we should send your leads.', field: 'email' }, { status: 422 })
   }
 
-  if (!rateLimit(`create:${clientKey(request)}`, config.createRateLimitPerHour)) {
-    return json({ error: 'Too many new searches from this browser. Please try again later.', field: 'email' }, { status: 429 })
+  if (!(await rateLimit(`create:${clientKey(request)}`, config.createRateLimitPerHour))) {
+    return json({ error: 'Too many new searches from this network in the last hour. Please try again later.', field: null }, { status: 429 })
+  }
+
+  // One free search per website and per email address. The existing radar's link goes to its owner's inbox, never
+  // back to this browser: whoever typed the address may not be the person who created it.
+  const claimed = await findClaimedFreeSearch(website, email)
+  if (claimed) {
+    await resendPrivateLink(claimed.radar)
+    const error =
+      claimed.match === 'website'
+        ? `A radar already exists for ${website.host}. Its private link goes to the email address it was created with: we’ve just sent it again (at most once an hour).`
+        : 'This email address has already used its free search. We’ve just sent its private link to that inbox again (at most once an hour).'
+    return json({ error, field: null, code: 'existing_radar' }, { status: 409 })
   }
 
   const timezone = isValidTimeZone(body?.timezone) ? body.timezone : null

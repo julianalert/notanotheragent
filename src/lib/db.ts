@@ -245,6 +245,21 @@ create table if not exists events (
 create index if not exists events_radar_idx on events (radar_id, name, created_at desc);
 create index if not exists events_name_idx on events (name, created_at desc);
 
+-- Sprint 1 (activation): when the focus last changed (a change after the first search earns one free re-run) and when
+-- the private link was last re-sent by email (at most once an hour).
+alter table radars add column if not exists focus_updated_at timestamptz;
+alter table radars add column if not exists link_sent_at timestamptz;
+create index if not exists radars_host_idx on radars (website_host);
+create index if not exists radars_email_idx on radars (email);
+
+-- Shared rate limiter: one row per key and hour. Serverless instances share nothing else.
+create table if not exists rate_limits (
+  key text not null,
+  window_start timestamptz not null,
+  hits integer not null default 0,
+  primary key (key, window_start)
+);
+
 -- Human review during the pilot (spec §2.3). One row per reviewed candidate.
 create table if not exists evaluation_reviews (
   id uuid primary key default gen_random_uuid(),

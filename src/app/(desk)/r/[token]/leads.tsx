@@ -378,6 +378,12 @@ export function LeadDrawer({
           </section>
         )}
 
+        {!enrichment && lead.enriching && (
+          <section className="sec sec--pending" aria-live="polite">
+            <h3>Who they are</h3>
+            <p>Looking up their company and public profile. This appears here in under a minute.</p>
+          </section>
+        )}
         {enrichment && (
           <section className="sec">
             <h3>

@@ -9,7 +9,7 @@ import { after } from 'next/server'
 export const PUT = withErrors(async function putHandler(request: Request) {
   const radar = await radarFromRequest(request)
   if (!radar) return notFound()
-  if (!rateLimit(`email:${clientKey(request)}`, config.createRateLimitPerHour * 2)) {
+  if (!(await rateLimit(`email:${clientKey(request)}`, config.createRateLimitPerHour * 2))) {
     return json({ error: 'Too many attempts. Please try again later.', field: 'email' }, { status: 429 })
   }
   const body = await request.json().catch(() => null)

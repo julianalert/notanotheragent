@@ -8,6 +8,8 @@ import {
   RESEARCH_REASONING_EFFORT,
   ResearchResult,
   SCHEMA_NAME,
+  type BusinessProfileT,
+  type CandidateT,
 } from './contract'
 import { mockProvider } from './mock'
 import { createPipelineProvider, dbPipelineStore } from './pipeline'
@@ -52,8 +54,30 @@ export type Usage = {
 /** Tool activity as exposed by the Responses API: what was actually searched and opened. */
 export type ToolAction = { type: string; query: string | null; url: string | null; status: string | null }
 
+/** Results a run can hand over before it ends, so the page has something to show during the wait. */
+export type PartialResult = {
+  /** The business profile, as soon as the website has been read. */
+  profile: BusinessProfileT | null
+  /** Candidates judged so far (one qualification batch). Gates run on them exactly as they do at the end. */
+  candidates: CandidateT[]
+  auditUrls: string[]
+  /** Which search topic surfaced each source, for leads.topic. */
+  sources: Array<{ url: string; topic: string }>
+}
+
+/** Where a running attempt is, from what it has actually done. Counts are null until the step that produces them ends. */
+export type RunProgress = {
+  step: 'brief' | 'search' | 'triage' | 'read' | 'qualify'
+  stepStartedAt: string | null
+  websitePages: number | null
+  hits: number | null
+  /** Hits worth reading after triage, then the ones that could be read. */
+  sources: number | null
+  batches: { done: number; total: number } | null
+}
+
 export type Inspection =
-  | { state: 'pending' }
+  | { state: 'pending'; partial?: PartialResult }
   | { state: 'completed'; text: string; auditUrls: string[]; actions: ToolAction[]; usage: Usage; raw: unknown }
   | { state: 'failed'; code: ErrorCode; message: string; usage?: Usage; raw?: unknown }
 
@@ -82,6 +106,8 @@ export interface ResearchProvider {
   /** Tool-free, schema-constrained formatting. Never adds facts; gates rerun on its output. */
   format(text: string): Promise<{ text: string; usage: Usage }>
   cancel(responseId: string): Promise<void>
+  /** Read-only and cheap: called while the visitor waits. Providers that can't tell return null. */
+  progress?(responseId: string): Promise<RunProgress | null>
 }
 
 /**

@@ -14,6 +14,8 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
   const [value, setValue] = useState(defaultValue)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  // The address we warned about (it couldn't be opened): submitting it again unchanged goes ahead.
+  const [warnedFor, setWarnedFor] = useState<string | null>(null)
   // Step 2: the website is valid; research starts only once the visitor gives an email.
   const [started, setStarted] = useState<{ website: string; host: string } | null>(null)
 
@@ -26,9 +28,15 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
     }
     setPending(true)
     setError(null)
-    const result = await checkWebsite(value)
+    const result = await checkWebsite(value, warnedFor === value.trim())
     if (!result.ok) {
       setError(result.error)
+      setPending(false)
+      return
+    }
+    if (result.warning && !result.existingToken) {
+      setWarnedFor(value.trim())
+      setError(result.warning)
       setPending(false)
       return
     }
@@ -83,7 +91,7 @@ export function WebsiteForm({ defaultValue = '' }: { defaultValue?: string }) {
           className="min-w-0 flex-1 bg-transparent px-4 text-base/7 text-mist-950 placeholder:text-mist-500 focus:outline-hidden sm:text-sm/7 dark:text-white"
         />
         <Button type="submit" size="lg" color="accent" disabled={pending} aria-disabled={pending} className="disabled:opacity-70">
-          {pending ? 'Checking…' : 'Get my first leads'}
+          {pending ? 'Checking…' : warnedFor !== null && warnedFor === value.trim() ? 'Use it anyway' : 'Get my first leads'}
         </Button>
       </div>
       {error && (

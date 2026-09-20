@@ -1,11 +1,12 @@
 import 'server-only'
 import { agentLive } from './billing/subscription'
 import { config } from './config'
-import { query, transaction } from './db'
+import { query, transaction, type Queryable } from './db'
 import type { RadarRow, RunRow } from './radars'
 import {
   AUTOMATIC_FOLLOW_UPS,
   MAX_CANDIDATES,
+  RERUN_KEY,
   PROMPT_VERSION,
   ResearchResult,
   SCHEMA_VERSION,
@@ -15,7 +16,7 @@ import {
   type ResearchResultT,
   type RunOutcome,
 } from './research/contract'
-import { followUpDecision, isResearchOpen, qualifyCandidates, sourceKey, validateProfile } from './research/gates'
+import { followUpDecision, isResearchOpen, MAX_PUBLISHED_PER_RUN, qualifyCandidates, sourceKey, validateProfile, type QualifiedLead } from './research/gates'
 import { enrichLead } from './research/enrich'
 import type { PipelineSummary } from './research/pipeline'
 import { postWebhook } from './email/webhook'
@@ -25,6 +26,7 @@ import {
   isRetryable,
   ResearchError,
   type ErrorCode,
+  type PartialResult,
   type ResearchProvider,
   type RunContext,
   type ToolAction,
@@ -62,6 +64,8 @@ export async function tick() {
     if (!run) break
     await checkRun(run)
   }
+  // Leads are published before their enrichment: pick up any a crashed function left without one.
+  await enrichLeads(null).catch((error) => log('runs.enrich_sweep_error', { error: (error as Error).message.slice(0, 200) }))
   // Email failures must never block research.
   await sendPendingEmails().catch((error) => log('email.tick_error', { error: (error as Error).message.slice(0, 200) }))
 }
@@ -78,6 +82,8 @@ async function expireResearch() {
   )
   if (cancelled.length) log('runs.expired', { count: cancelled.length })
   await query(`update radars set next_run_at = null where next_run_at is not null and research_ends_at <= now()`)
+  // Rate-limit windows are one hour long; yesterday's are only clutter. Tolerates a database without migration 010.
+  await query(`delete from rate_limits where window_start < now() - interval '1 day'`).catch(() => undefined)
 }
 
 async function enqueueDueDailyRuns() {
@@ -228,7 +234,7 @@ async function startRun(run: RunRow) {
       `select source_url, source_key, published_date, user_status, dismiss_reason, user_status_at, data from leads where radar_id = $1 order by discovered_at`,
       [radar.id],
     ),
-    runMemory(radar.id, run.kind),
+    runMemory(radar.id, run.kind, run.run_key === RERUN_KEY),
   ])
   // Feedback: the most recently contacted and dismissed leads, as examples of what the user wants and rejects.
   const judged = prior.filter((lead) => lead.user_status !== 'new').sort((a, b) => (b.user_status_at ? new Date(b.user_status_at).getTime() : 0) - (a.user_status_at ? new Date(a.user_status_at).getTime() : 0))
@@ -332,12 +338,15 @@ async function startRun(run: RunRow) {
  * candidates already judged (a follow-up re-examines them, so it gets none), topics that produced leads, and
  * topics that never produced a candidate after three runs.
  */
-async function runMemory(radarId: string, kind: RunRow['kind']) {
+async function runMemory(radarId: string, kind: RunRow['kind'], fresh = false) {
   const [seen, candidates, stats, watched] = await Promise.all([
+    // The free second search runs because the first found nothing or the user corrected the focus: what the first one
+    // set aside was judged against the old focus, so only published sources stay excluded.
     query<{ source_key: string }>(
       `select source_key from seen_sources
-       where radar_id = $1 and last_seen_at > now() - interval '30 days' and not (decision = 'unresolved' and times_seen < 2)`,
-      [radarId],
+       where radar_id = $1 and last_seen_at > now() - interval '30 days' and not (decision = 'unresolved' and times_seen < 2)
+         and ($2::boolean is not true or decision = 'published')`,
+      [radarId, fresh],
     ),
     kind === 'follow_up'
       ? Promise.resolve([] as Array<{ source_key: string }>)
@@ -400,7 +409,11 @@ async function checkRun(run: RunRow) {
 
   if (inspection.state === 'pending') {
     if (overDeadline) await handleFailure(run, 'timed_out', 'Attempt exceeded the wall deadline')
-    else await release(run.id)
+    else {
+      // Publishing early is a bonus: if it fails, the final result still carries everything.
+      if (inspection.partial) await savePartial(run, inspection.partial).catch((error) => log('runs.partial_failed', { run: run.id, error: (error as Error).message.slice(0, 200) }))
+      await release(run.id)
+    }
     return
   }
   if (inspection.state === 'failed') {
@@ -515,7 +528,7 @@ async function saveResults(
   const radar = await getRadar(run.radar_id)
   const now = new Date()
   const provider = getProvider()
-  let usage = usageIn
+  const usage = usageIn
 
   let outcome: RunOutcome | null = null
   let profile: BusinessProfileT | null = run.kind === 'initial' ? null : radar.profile
@@ -546,7 +559,13 @@ async function saveResults(
       `select source_key, identity_key, need_text, run_id from leads where radar_id = $1`,
       [radar.id],
     )
+    // Leads this run published while it was still going keep their place among its five. After a retried attempt
+    // they may not be among the candidates any more: they still count.
+    const ownKeys = new Set(prior.filter((lead) => lead.run_id === run.id).map((lead) => lead.source_key))
+    const candidateKeys = new Set(result.candidates.map((candidate) => sourceKey(candidate.source_url)))
     qualified = qualifyCandidates(result.candidates.slice(0, MAX_CANDIDATES), {
+      publishedKeys: ownKeys,
+      maxPublished: MAX_PUBLISHED_PER_RUN - [...ownKeys].filter((key) => !candidateKeys.has(key)).length,
       now,
       publishedOnOrAfter: run.published_on_or_after
         ? new Date(run.published_on_or_after).toISOString().slice(0, 10)
@@ -568,21 +587,6 @@ async function saveResults(
   }
 
   const published = qualified?.published ?? []
-  // Enrichment: the public business footprint behind each published lead, bounded so a slow search never blocks the run.
-  if (published.length && profile && getProvider().name !== 'mock') {
-    const enriched = await Promise.allSettled(published.map((item) => enrichLead(item.lead, profile, 45_000)))
-    enriched.forEach((outcome, index) => {
-      published[index].lead.enrichment = outcome.status === 'fulfilled' ? outcome.value.enrichment : null
-      if (outcome.status === 'fulfilled') {
-        usage = {
-          ...usage,
-          web_search_calls: usage.web_search_calls + outcome.value.usage.web_search_calls,
-          small_input_tokens: (usage.small_input_tokens ?? 0) + outcome.value.usage.input_tokens,
-          small_output_tokens: (usage.small_output_tokens ?? 0) + outcome.value.usage.output_tokens,
-        }
-      } else log('runs.enrich_failed', { run: run.id, error: String((outcome.reason as Error)?.message ?? outcome.reason).slice(0, 120) })
-    })
-  }
   const followUp = followUpDecision({
     enabled: AUTOMATIC_FOLLOW_UPS,
     kind: run.kind,
@@ -646,7 +650,12 @@ async function saveResults(
   )
   const unemailed = unemailedRow.count + published.length
   const emailStatus =
-    run.kind === 'initial'
+    // The free second search emails only when it found something: the first search already sent its report.
+    run.run_key === RERUN_KEY
+      ? published.length
+        ? 'pending'
+        : 'skipped'
+      : run.kind === 'initial'
       ? followUp.run
         ? 'skipped'
         : 'pending'
@@ -682,28 +691,7 @@ async function saveResults(
       await tx.query(`update radars set profile = $2 where id = $1`, [radar.id, toJsonb(profileToSave)])
     }
 
-    for (const lead of published) {
-      await tx.query(
-        `insert into leads (radar_id, run_id, source_url, source_key, identity_key, need_text, published_date, intent,
-           score_total, discovered_at, data, topic)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         on conflict (radar_id, source_key) do nothing`,
-        [
-          radar.id,
-          run.id,
-          lead.sourceUrl,
-          lead.sourceKey,
-          lead.identityKey,
-          lead.needText,
-          lead.lead.published_date,
-          lead.lead.intent,
-          lead.score.total,
-          now,
-          toJsonb(lead.lead satisfies LeadT),
-          topicBySource.get(lead.sourceKey) ?? null,
-        ],
-      )
-    }
+    for (const lead of published) await insertLead(tx, radar.id, run.id, lead, now, topicBySource.get(lead.sourceKey) ?? null)
 
     // Watched sources: the communities where candidates were found, polled by watch runs once the agent is active.
     if (pipeline) {
@@ -797,7 +785,9 @@ async function saveResults(
     }
 
     await tx.query(
-      `update research_runs set status = 'completed', outcome = $2, usage = $3, cost_usd = $4, coverage = $5,
+      // Enrichment of leads published during the run has already added its own usage and cost.
+      `update research_runs set status = 'completed', outcome = $2, usage = coalesce(usage, '{}'::jsonb) || $3::jsonb,
+         cost_usd = coalesce(cost_usd, 0) + $4, coverage = $5,
          audit_urls = $6, validation_report = $7, raw_response = $8, format_repair_used = $9, email_status = $10,
          diagnostics = $11, error_code = null, error = null, completed_at = now(), lease_until = null,
          duration_ms = (extract(epoch from (now() - started_at)) * 1000)::int
@@ -826,6 +816,9 @@ async function saveResults(
     )
   })
 
+  // Leads are visible from here on. Who is behind each one comes next, and must never hold them back.
+  if (published.length) await enrichLeads(run.id).catch((error) => log('runs.enrich_failed', { run: run.id, error: (error as Error).message.slice(0, 120) }))
+
   if (published.length && radar.webhook_url) {
     await postWebhook(radar.webhook_url, { websiteHost: radar.website_host, leads: published.map((item) => item.lead) }).catch((error) =>
       log('runs.webhook_failed', { run: run.id, error: (error as Error).message.slice(0, 120) }),
@@ -843,6 +836,117 @@ async function saveResults(
     cost_usd: Number(cost.toFixed(4)),
     format_repair: repairUsed,
   })
+}
+
+async function insertLead(tx: Queryable, radarId: string, runId: string, lead: QualifiedLead, now: Date, topic: string | null) {
+  await tx.query(
+    `insert into leads (radar_id, run_id, source_url, source_key, identity_key, need_text, published_date, intent,
+       score_total, discovered_at, data, topic)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     on conflict (radar_id, source_key) do nothing`,
+    [
+      radarId,
+      runId,
+      lead.sourceUrl,
+      lead.sourceKey,
+      lead.identityKey,
+      lead.needText,
+      lead.lead.published_date,
+      lead.lead.intent,
+      lead.score.total,
+      now,
+      toJsonb(lead.lead satisfies LeadT),
+      topic,
+    ],
+  )
+}
+
+/* -------------------------------- Partial --------------------------------- */
+
+/**
+ * Results handed over while the run is still going: the profile once the website is read, then the candidates of
+ * each qualification batch. They pass the same gates as at the end and count towards the run's five leads; the final
+ * save then finds them already stored. Everything here is idempotent, so a partial delivered twice changes nothing.
+ */
+async function savePartial(run: RunRow, partial: PartialResult) {
+  const radar = await getRadar(run.radar_id)
+  const now = new Date()
+  let profile = radar.profile
+  if (run.kind === 'initial') {
+    // The same verification as the final save, on the same website pages: an unverified profile shows nothing.
+    if (!partial.profile || !validateProfile(partial.profile, radar.website, partial.auditUrls).ok) return
+    profile = partial.profile
+    if (!radar.profile) await query(`update radars set profile = $2 where id = $1 and profile is null`, [radar.id, toJsonb(profile)])
+  }
+  if (!profile || !partial.candidates.length) return
+
+  const prior = await query<{ source_key: string; identity_key: string; need_text: string; run_id: string }>(
+    `select source_key, identity_key, need_text, run_id from leads where radar_id = $1`,
+    [radar.id],
+  )
+  const qualified = qualifyCandidates(partial.candidates.slice(0, MAX_CANDIDATES), {
+    now,
+    publishedOnOrAfter: run.published_on_or_after ? new Date(run.published_on_or_after).toISOString().slice(0, 10) : now.toISOString().slice(0, 10),
+    auditUrls: partial.auditUrls,
+    profile,
+    focus: radar.focus,
+    // Batches hold different sources, so this run's earlier leads are real duplicates to check against.
+    prior: prior.map((lead) => ({ sourceKey: lead.source_key, identityKey: lead.identity_key, needText: lead.need_text })),
+    maxPublished: MAX_PUBLISHED_PER_RUN - prior.filter((lead) => lead.run_id === run.id).length,
+  })
+  if (!qualified.published.length) return
+
+  const topicBySource = new Map<string, string>()
+  for (const source of partial.sources) {
+    const key = sourceKey(source.url)
+    if (key) topicBySource.set(key, source.topic)
+  }
+  await transaction(async (tx) => {
+    for (const lead of qualified.published) await insertLead(tx, radar.id, run.id, lead, now, topicBySource.get(lead.sourceKey) ?? null)
+  })
+  log('runs.partial_published', { run: run.id, kind: run.kind, published: qualified.published.length })
+  await enrichLeads(run.id)
+}
+
+/* ------------------------------- Enrichment ------------------------------- */
+
+/**
+ * The public business footprint behind each lead ("Who they are"), looked up after the lead is visible. A lead
+ * without the `enrichment` key has not been tried yet; after one try the key holds the finding or null, so nothing
+ * is looked up twice. With a run id: that run's leads, now. Without: leads a crashed function left behind.
+ */
+async function enrichLeads(runId: string | null) {
+  if (getProvider().name === 'mock') return
+  const rows = await query<{ id: string; run_id: string; data: LeadT; profile: BusinessProfileT }>(
+    `select l.id, l.run_id, l.data, r.profile from leads l join radars r on r.id = l.radar_id
+     where not jsonb_exists(l.data, 'enrichment') and r.profile is not null and l.held_reason is null
+       and ${runId ? 'l.run_id = $1' : `l.discovered_at between now() - interval '1 day' and now() - interval '3 minutes' and $1::text is null`}
+     order by l.discovered_at limit 10`,
+    [runId],
+  )
+  if (!rows.length) return
+  const outcomes = await Promise.allSettled(rows.map((row) => enrichLead(row.data, row.profile, 45_000)))
+  for (const [index, outcome] of outcomes.entries()) {
+    const row = rows[index]
+    const found = outcome.status === 'fulfilled' ? outcome.value : null
+    if (!found) log('runs.enrich_failed', { run: row.run_id, error: String((outcome as PromiseRejectedResult).reason?.message ?? 'unknown').slice(0, 120) })
+    await query(`update leads set data = jsonb_set(data, '{enrichment}', $2::jsonb) where id = $1`, [row.id, toJsonb(found?.enrichment ?? null)])
+    if (!found) continue
+    const { usage } = found
+    const cost =
+      (usage.input_tokens / 1e6) * config.cost.smallInputPerMTok +
+      (usage.output_tokens / 1e6) * config.cost.smallOutputPerMTok +
+      usage.web_search_calls * config.cost.perWebSearch
+    await query(
+      `update research_runs set cost_usd = coalesce(cost_usd, 0) + $2,
+         usage = coalesce(usage, '{}'::jsonb) || jsonb_build_object(
+           'enrich_input_tokens', coalesce((usage->>'enrich_input_tokens')::int, 0) + $3::int,
+           'enrich_output_tokens', coalesce((usage->>'enrich_output_tokens')::int, 0) + $4::int,
+           'enrich_web_search_calls', coalesce((usage->>'enrich_web_search_calls')::int, 0) + $5::int)
+       where id = $1`,
+      [row.run_id, cost.toFixed(4), usage.input_tokens, usage.output_tokens, usage.web_search_calls],
+    )
+  }
 }
 
 /* -------------------------------- Failures -------------------------------- */
