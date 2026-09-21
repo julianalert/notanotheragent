@@ -9,7 +9,7 @@ export const RESEARCH_MODEL = 'gpt-5.5-2026-04-23'
 // v2.2: cost budget: medium reasoning, hard tool-call cap stated in the prompt, capped exclusion list.
 // v3: app-controlled discovery pipeline (search, triage, read, qualify as separate steps); trigger_event intent;
 // needs may match documented problems solved, not only service names.
-export const PROMPT_VERSION = 'research-v3.2'
+export const PROMPT_VERSION = 'research-v3.3'
 export const SCHEMA_NAME = 'lead_research_v3'
 export const SCHEMA_VERSION = '3'
 // Room for the acquisition brief and a pool of up to 15 candidates on top of high reasoning.
@@ -43,6 +43,8 @@ export const SEARCH_TOPICS = { initial: 12, daily: 12, follow_up: 8, watch: 6 } 
 export const MAX_SOURCES_TO_READ = { initial: 20, daily: 15, follow_up: 12, watch: 6 } as const
 /** Results requested per connector and topic. */
 export const RESULTS_PER_SEARCH = 10
+/** Buyer communities (subreddits) the brief names that a first search goes to directly. */
+export const BRIEF_COMMUNITIES = 6
 /** Search hits kept after deduplication, before triage (triage reads previews only, so this is cheap). */
 export const MAX_HITS = 160
 /** Triage score (0-3) a hit needs to be read in full. */
@@ -237,6 +239,8 @@ export const BriefResult = z
       .object({
         angles: z.array(S),
         proposed_queries: z.array(S),
+        /** Subreddits where these buyers post about their own situation, names only. Searched directly by a first run. */
+        communities: z.array(S),
       })
       .strict(),
   })

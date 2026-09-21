@@ -1,6 +1,7 @@
 import { APIConnectionError, APIError } from 'openai'
 import { zodTextFormat } from 'openai/helpers/zod'
 import {
+  BRIEF_COMMUNITIES,
   BriefResult,
   MAX_OUTPUT_TOKENS,
   MAX_SOURCES_TO_READ,
@@ -474,6 +475,12 @@ async function stepBrief(state: PipelineState) {
     // Profiles saved before research-v2 keep their website facts and gain the brief.
     profile = profile ? { ...profile, acquisition_brief: brief.profile.acquisition_brief } : brief.profile
     planned = brief.search_plan.proposed_queries
+    // A first search goes straight to the communities where these buyers post, as well as searching by topic:
+    // per-topic searches return overlapping posts, and the communities are where most of the leads are.
+    const named = brief.search_plan.communities
+      .map((name) => name.trim().replace(/^\/?r\//i, ''))
+      .filter((name) => /^[A-Za-z0-9_]{2,21}$/.test(name))
+    state.subreddits = [...new Set([...state.subreddits, ...named.map((name) => name.toLowerCase())])].slice(0, BRIEF_COMMUNITIES)
   }
 
   state.profile = profile

@@ -110,10 +110,10 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
     perTopic.set(topic.query, roundRobin(results.map((result) => result.hits)))
   }
 
-  await parallel(topics, options.concurrency ?? 6, runTopic)
-
-  // Polled side by side: one after another, eight slow hosted searches could outlast the function running the step.
-  await parallel(options.subreddits ?? [], 4, async (subreddit) => {
+  // Topics and communities at the same time: one after the other, the hosted searches could outlast the function
+  // running the step, and a first search would make the visitor wait a minute longer.
+  const topicSearches = parallel(topics, options.concurrency ?? 6, runTopic)
+  const communityPolls = parallel(options.subreddits ?? [], 4, async (subreddit) => {
     const name = subreddit.replace(/^r\//, '')
     // Watched subreddits: Reddit's listing with partner credentials, otherwise hosted browsing restricted to the subreddit.
     const result = redditConfigured()
@@ -133,6 +133,7 @@ export async function discover(topics: SearchTopic[], options: DiscoverOptions):
     searches.push({ connector: result.connector, query: `r/${name}/new`, hits: result.hits.length, error: result.error })
     perTopic.set(`subreddit:${name}`, result.hits)
   })
+  await Promise.all([topicSearches, communityPolls])
 
   const floor = Date.parse(`${options.windowStart}T00:00:00Z`) - DAY_MS
   const seen = new Set<string>()

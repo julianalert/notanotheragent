@@ -160,9 +160,19 @@ const CANDIDATE_RULES = `For each candidate:
     undated page qualifies when nothing on it suggests the post is old, closed or resolved. Details the author
     did not share (audience size, budget, exact date, company) are not a reason to withhold qualification:
     qualify and list them in missing_info.
-  "rejected": fabricated or unsupported need, seller or vendor promotion, wrong customer type (including the
-    buyer's customer), explicit disinterest, closed/filled/expired request, clear geographic mismatch, published
-    before the window, or a duplicate of an excluded opportunity or cross-post.
+    Match the buyer by role and goal, not by every attribute the website lists. The platform or channel they
+    use, their audience or company size, their niche and their tools are attributes. When the author is the same
+    kind of buyer, with the goal the offer delivers, but differs on such an attribute or does not state it (a
+    TikTok or YouTube creator for an offer described for Instagram creators; a follower count outside the
+    stated range, or not given), qualify: name the difference in caveats, list what is unknown in missing_info,
+    lower service_fit by one, and let the first message ask about it. The business owner decides whether the
+    difference matters; a lead they never see is a lead lost.
+  "rejected": fabricated or unsupported need, seller or vendor promotion, wrong customer type (a different
+    role: a seller, an agency or adviser, the buyer's customer, or someone who does not yet have what the offer
+    works on, such as an audience, a business or a product; never merely a different platform, size or niche,
+    unless the profile's exclusions or the user's focus rule it out), a goal unrelated to what the offer
+    achieves, explicit disinterest, closed/filled/expired request, clear geographic mismatch, published before
+    the window, or a duplicate of an excluded opportunity or cross-post.
   "unresolved": only when something essential could not be checked: the post could not be read, the author is
     not identifiable at all, or there is no way to reply. Explain what is missing in missing_info and
     access_limitations.
@@ -274,6 +284,10 @@ short searches (3 to 9 words) in the buyers' own words and languages, the way th
 question or complaint into a community's search box: explicit requests, first-person problems and trigger
 situations in roughly equal measure, the most common situation first. One idea per query, no site: restrictions, no quotation marks, no month
 names, years or "posted" terms, no full sentences.
+search_plan.communities: up to 8 subreddits where these buyers themselves post about their situation (their own
+communities, where they ask each other for advice), most active first, names only without "r/". Not the
+communities of people who sell to them, and not generic business or marketing subreddits unless that is where
+these buyers really are. An empty list when you know of none.
 
 OUTPUT
 Return only the schema-conforming result: research_status ("complete", "website_unreadable" when no concrete

@@ -12,6 +12,7 @@ import {
   SCHEMA_VERSION,
   SUCCESSFUL_OUTCOMES,
   type BusinessProfileT,
+  type CandidateT,
   type LeadT,
   type ResearchResultT,
   type RunOutcome,
@@ -663,7 +664,23 @@ async function saveResults(
     // they may not be among the candidates any more: they still count.
     const ownKeys = new Set(prior.filter((lead) => lead.run_id === run.id).map((lead) => lead.source_key))
     const candidateKeys = new Set(result.candidates.map((candidate) => sourceKey(candidate.source_url)))
-    qualified = qualifyCandidates(result.candidates.slice(0, MAX_CANDIDATES), {
+    // Leads that qualified on an earlier run but lost its top-five cut were judged, never shown, and are excluded
+    // from every later search. They compete with today's finds on score, so the best five are shown either way.
+    // They passed these gates against the pages their own run read: those pages vouch for them here too.
+    const backlog = (
+      await query<{ data: CandidateT }>(
+        `select distinct on (c.source_key) c.data from research_candidates c
+         where c.radar_id = $1 and c.run_id <> $2 and c.decision = 'qualified_not_selected' and c.source_key is not null
+           and not exists (select 1 from leads l where l.radar_id = c.radar_id and l.source_key = c.source_key)
+         order by c.source_key, c.score_total desc`,
+        [radar.id, run.id],
+      )
+    )
+      .map((row) => row.data)
+      .filter((candidate) => !candidateKeys.has(sourceKey(candidate.source_url)))
+    const backlogKeys = new Set(backlog.map((candidate) => sourceKey(candidate.source_url)))
+    auditUrls = [...auditUrls, ...backlog.flatMap((candidate) => [candidate.source_url, ...candidate.evidence.map((item) => item.url)])]
+    qualified = qualifyCandidates([...result.candidates.slice(0, MAX_CANDIDATES), ...backlog], {
       publishedKeys: ownKeys,
       maxPublished: MAX_PUBLISHED_PER_RUN - [...ownKeys].filter((key) => !candidateKeys.has(key)).length,
       now,
@@ -678,6 +695,11 @@ async function saveResults(
         .filter((lead) => lead.run_id !== run.id)
         .map((lead) => ({ sourceKey: lead.source_key, identityKey: lead.identity_key, needText: lead.need_text })),
     })
+    const promoted = qualified.published.filter((lead) => backlogKeys.has(lead.sourceKey)).map((lead) => lead.sourceKey)
+    if (promoted.length) {
+      await query(`update research_candidates set decision = 'published' where radar_id = $1 and decision = 'qualified_not_selected' and source_key = any($2::text[])`, [radar.id, promoted])
+      log('runs.backlog_published', { run: run.id, published: promoted.length })
+    }
     const { counts } = qualified
     if (counts.published > 0) outcome = 'qualified_results'
     else if (result.research_status === 'incomplete') outcome = 'research_incomplete'
