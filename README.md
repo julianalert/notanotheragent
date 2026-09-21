@@ -61,8 +61,8 @@ After the website step, visitors give the email address where leads should go. R
 
 ## Watching and learning
 
-- **One complete run per day.** An active radar runs at 8:00 local: 12 buyer situations across every connector, plus a poll of its `watched_sources` (the communities where earlier runs found candidates, toggleable on the page), then one digest email. `WATCH_INTERVAL_HOURS` (off by default) adds extra polls between morning runs (`kind = 'watch'`, smaller budgets, instant email only for an explicit request scoring at least `INSTANT_ALERT_MIN_SCORE`); they pause at `MONTHLY_RADAR_BUDGET_USD`.
-- **Memory:** `seen_sources` (never re-read within 30 days; an unresolved one may be checked once more), `search_stats` (per-topic hits, candidates, published, contacted: proven topics run first, dead topics are dropped), `leads.dismiss_reason` (asked with one tap when a lead is dismissed) and the contacted/dismissed leads themselves, which reach the triage and qualification prompts as `feedback`.
+- **One complete run per day.** An active radar runs at 8:00 local: 12 buyer situations across every connector, plus a poll of its `watched_sources` (the communities where earlier runs found posts that scored 2+ at triage; every one that produced a lead, or the three most promising until one has), then one digest email. `WATCH_INTERVAL_HOURS` (off by default) adds extra polls between morning runs (`kind = 'watch'`, smaller budgets, instant email only for an explicit request scoring at least `INSTANT_ALERT_MIN_SCORE`); they pause at `MONTHLY_RADAR_BUDGET_USD`.
+- **Memory:** `seen_sources` (never re-read within 30 days once read in full and judged; a source only set aside at triage, or left unresolved, gets one more look on a later run, so a run that triaged badly doesn't blind the radar for a month), `search_stats` (per-topic hits, candidates, published, contacted: proven topics run first, dead topics are dropped), `leads.dismiss_reason` (asked with one tap when a lead is dismissed) and the contacted/dismissed leads themselves, which reach the triage and qualification prompts as `feedback`.
 - **Focus:** besides the service subset and market, the user can write who they want and who to skip; both steer search and qualification without adding undocumented services.
 
 ## Actionable leads
@@ -100,7 +100,7 @@ Two providers produce the same `lead_research_v3` result; the gates, scheduler, 
 - `website_unreadable` and `unsupported_business` show a URL-correction state.
 - Provider failures record an `error_code`. Transient errors, missing search activity, incomplete output and timeouts get one automatic retry. Configuration errors, refusals and uncertain creation don't.
 
-**Windows:** the initial run searches back 90 days. Daily runs search back 30 days (or to the last successful run − 72 h after a longer gap, at most 90 days); the radar's memory of seen sources, judged candidates and leads keeps out repeats.
+**Windows:** the initial run searches back 90 days, and so do the morning runs of a radar's first 7 days (the first search covers a fraction of that window; memory keeps out repeats). Daily runs search back 30 days (or to the last successful run − 72 h after a longer gap, at most 90 days); the radar's memory of seen sources, judged candidates and leads keeps out repeats.
 
 **Deadline:** no research call, retry or repair starts at or after `research_ends_at`. This is checked in the same `UPDATE` that marks a run running.
 

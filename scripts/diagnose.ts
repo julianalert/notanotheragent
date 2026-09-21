@@ -23,6 +23,26 @@ async function main() {
      where r.website_host = $1 order by rr.created_at desc limit 10`,
     [host],
   )
+  // What each radar remembers: sources it will not look at again for 30 days, and the communities it polls.
+  for (const radarId of new Set(runs.rows.map((run) => run.radar_id as string))) {
+    const seen = await client.query(
+      `select decision, triage_score, count(*)::int as n, count(*) filter (where url ~* 'reddit\\.com')::int as reddit,
+         min(first_seen_at) as first_seen, max(last_seen_at) as last_seen
+       from seen_sources where radar_id = $1 group by decision, triage_score order by n desc`,
+      [radarId],
+    )
+    console.log(`\n### radar ${radarId} memory (seen_sources)`)
+    for (const row of seen.rows) console.log(`  ${row.decision} · triage ${row.triage_score}: ${row.n} (${row.reddit} reddit) · ${row.first_seen?.toISOString().slice(0, 16)} → ${row.last_seen?.toISOString().slice(0, 16)}`)
+    const zeroReddit = await client.query(
+      `select url from seen_sources where radar_id = $1 and decision = 'triaged_out' and triage_score = 0 and url ~* 'reddit\\.com' order by last_seen_at desc limit 25`,
+      [radarId],
+    )
+    console.log('  reddit posts triaged out at 0 (latest 25):')
+    for (const row of zeroReddit.rows) console.log(`    ${String(row.url).replace(/^https?:\/\/(www\.)?reddit\.com/, '')}`)
+    const watched = await client.query(`select label, enabled, hits, published from watched_sources where radar_id = $1 order by published desc, hits desc`, [radarId])
+    console.log('  watched:', watched.rows.map((row) => `${row.label}${row.enabled ? '' : ' (off)'} ${row.hits}/${row.published}`).join(' · '))
+  }
+
   for (const run of runs.rows) {
     const d = run.diagnostics
     console.log(`\n=== ${run.kind} run ${run.id} (radar ${run.radar_id}) — ${run.created_at.toISOString()}`)

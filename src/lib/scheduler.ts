@@ -20,7 +20,7 @@ import { followUpDecision, isResearchOpen, MAX_PUBLISHED_PER_RUN, qualifyCandida
 import { enrichLead } from './research/enrich'
 import { probeMatches, type PipelineSummary } from './research/pipeline'
 import { postWebhook } from './email/webhook'
-import { buildResearchInput, lintQuery, type ExcludedOpportunity, type Feedback, type PreviousCandidate } from './research/prompt'
+import { buildResearchInput, lintQuery, publishedOnOrAfter, type ExcludedOpportunity, type Feedback, type PreviousCandidate } from './research/prompt'
 import {
   getProvider,
   isRetryable,
@@ -40,6 +40,10 @@ import { localDateKey, nextDailyRunAt } from './time'
 const MAX_PER_TICK = 20
 /** Searches proposed by the previous run that lead the next scheduled run (a third of a daily run's topics). */
 const CARRIED_QUERIES = 4
+/** Watched communities polled per run while none of them has produced a lead yet. */
+const UNPROVEN_COMMUNITIES = 3
+/** A radar this young still searches the first search's 90-day window: its first days decide whether it is kept. */
+const YOUNG_RADAR_DAYS = 7
 
 function log(event: string, details: Record<string, unknown>) {
   // Structured, token-free logging. Never log radar tokens, private URLs or raw provider output.
@@ -365,6 +369,11 @@ async function startRun(run: RunRow) {
       [radar.id, run.id],
     )
     followUp.untriedAngles = (last?.diagnostics?.proposed_queries ?? []).slice(0, CARRIED_QUERIES)
+    // The first search covers 90 days with twelve topics, a fraction of what is out there. A young radar's morning
+    // runs keep mining that window with other topics instead of the last 30 days only; memory keeps out repeats.
+    if (run.kind === 'daily' && now.getTime() - new Date(radar.created_at).getTime() < YOUNG_RADAR_DAYS * 86_400_000) {
+      followUp.windowStart = publishedOnOrAfter(now, null)
+    }
   }
 
   const input = buildResearchInput({
@@ -421,9 +430,13 @@ async function runMemory(radarId: string, kind: RunRow['kind'], fresh = false) {
   const [seen, candidates, stats, watched] = await Promise.all([
     // The free second search runs because the first found nothing or the user corrected the focus: what the first one
     // set aside was judged against the old focus, so only published sources stay excluded.
+    // A source set aside at triage (judged from a preview, sometimes from a title alone) or left unresolved gets a
+    // second look on a later run before it is ignored; one that was read in full and judged is final. A radar whose
+    // early runs triaged badly therefore heals by itself instead of staying blind to those posts for a month.
     query<{ source_key: string }>(
       `select source_key from seen_sources
-       where radar_id = $1 and last_seen_at > now() - interval '30 days' and not (decision = 'unresolved' and times_seen < 2)
+       where radar_id = $1 and last_seen_at > now() - interval '30 days'
+         and not (decision in ('unresolved', 'triaged_out') and times_seen < 2)
          and ($2::boolean is not true or decision = 'published')`,
       [radarId, fresh],
     ),
@@ -437,7 +450,15 @@ async function runMemory(radarId: string, kind: RunRow['kind'], fresh = false) {
       `select topic, runs, candidates, published, contacted from search_stats where radar_id = $1`,
       [radarId],
     ),
-    query<{ key: string }>(`select key from watched_sources where radar_id = $1 and kind = 'subreddit' and enabled order by published desc, hits desc limit 8`, [radarId]),
+    // Communities that produced leads are all polled; until one has, only the few with the most promising posts:
+    // each poll adds a full list of hits to the pool, and a community found by a weak search crowds out the rest.
+    query<{ key: string }>(
+      `select key from watched_sources w where radar_id = $1 and kind = 'subreddit' and enabled
+         and (published > 0 or (select count(*) from watched_sources p where p.radar_id = w.radar_id and p.published > 0) = 0)
+       order by published desc, hits desc
+       limit (case when exists (select 1 from watched_sources p where p.radar_id = $1 and p.published > 0) then 8 else ${UNPROVEN_COMMUNITIES} end)`,
+      [radarId],
+    ),
   ])
   return {
     watchedSubreddits: watched.map((row) => row.key),
@@ -776,7 +797,8 @@ async function saveResults(
     if (pipeline) {
       const communities = new Map<string, { hits: number; published: number }>()
       for (const source of pipeline.sources) {
-        if (!source.community?.startsWith('r/')) continue
+        // A post merely worth a look (triage 1) says little about where the buyers are.
+        if (!source.community?.startsWith('r/') || source.triage < 2) continue
         const key = sourceKey(source.url)
         const decision = key ? (qualified?.outcomes ?? []).find((outcome) => outcome.source_key === key)?.decision : undefined
         const entry = communities.get(source.community) ?? { hits: 0, published: 0 }

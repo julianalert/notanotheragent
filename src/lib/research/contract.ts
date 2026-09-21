@@ -44,7 +44,7 @@ export const MAX_SOURCES_TO_READ = { initial: 20, daily: 15, follow_up: 12, watc
 /** Results requested per connector and topic. */
 export const RESULTS_PER_SEARCH = 10
 /** Search hits kept after deduplication, before triage (triage reads previews only, so this is cheap). */
-export const MAX_HITS = 120
+export const MAX_HITS = 160
 /** Triage score (0-3) a hit needs to be read in full. */
 export const MIN_TRIAGE_SCORE = 1
 /** Wall deadline for a pipeline run: several bounded steps instead of one provider call. */
