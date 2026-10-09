@@ -134,10 +134,12 @@ async function enqueueDueDailyRuns() {
   const now = new Date()
   for (const radar of due) {
     const next = nextDailyRunAt(now, radar.timezone, scheduleEnd(radar), config.dailyRunHour)
-    // Optimistic claim: only one worker advances next_run_at from this exact value.
+    // Claim: only one worker advances next_run_at. The row lock serialises concurrent updates and each re-checks the
+    // predicate, so the second worker finds the row already moved to tomorrow. Never compare the stored value with the
+    // one read back: the driver keeps milliseconds, so a value written by SQL (now(), a manual update) never matches.
     const claimed = await query(
-      `update radars set next_run_at = $3 where id = $1 and next_run_at = $2 and research_ends_at > now() returning id`,
-      [radar.id, radar.next_run_at, next],
+      `update radars set next_run_at = $2 where id = $1 and next_run_at <= now() and research_ends_at > now() returning id`,
+      [radar.id, next],
     )
     if (!claimed.length) continue
     // One daily run per local date, enforced by the unique (radar_id, kind, run_key) constraint.
